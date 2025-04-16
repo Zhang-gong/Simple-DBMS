@@ -1,10 +1,9 @@
 import sys
 import os
-
-# add upper path to import storage.table
+# add upper path to import table
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from storage.table import Table
+from catalog.table import Table
 
 
 def test_table():

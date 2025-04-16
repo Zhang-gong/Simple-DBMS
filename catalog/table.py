@@ -5,7 +5,7 @@ class Table:
         self.name = name
         self.columns = columns
         self.primary_key = primary_key
-        self.rows = OOBTree()  # key 是主键，value 是完整 row dict
+        self.rows = OOBTree()  # key is primary_key, value is complete row dict
 
     def insert(self, row: dict):
         if set(row.keys()) != set(self.columns):

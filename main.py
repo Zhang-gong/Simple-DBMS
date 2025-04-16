@@ -1,6 +1,6 @@
 from parser.sql_parser import SQLParser
 from execution.executor import Executor
-from storage.table import Table
+from catalog.table import Table
 
 
 if __name__ == '__main__':
