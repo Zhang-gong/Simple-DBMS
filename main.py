@@ -5,7 +5,7 @@ from storage.table import Table
 
 if __name__ == '__main__':
     #build table A
-    table_A = Table(name="A", columns=["id", "row"])
+    table_A = Table(name="A", columns=["id", "row"],primary_key="id")
     table_A.insert({"id": 1, "row": "foo"})
     table_A.insert({"id": 5, "row": "bar"})
     table_A.insert({"id": 9, "row": "baz"})
