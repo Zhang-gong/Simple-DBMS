@@ -1,10 +1,11 @@
-from parser.sql_parser import SQLParser
-from execution.executor import Executor
+from sql_parser import SQLParser
+from executor import Executor
 from catalog.table import Table
 
 
 if __name__ == '__main__':
     #build table A
+    #create table
     table_A = Table(name="A", columns=["id", "row"],primary_key="id")
     table_A.insert({"id": 1, "row": "foo"})
     table_A.insert({"id": 5, "row": "bar"})
@@ -19,5 +20,3 @@ if __name__ == '__main__':
     executor = Executor(tables={"A": table_A})
     result = executor.execute(ast)
     print("Query Result:", result)
-
-#Select * from A

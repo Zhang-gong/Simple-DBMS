@@ -1,6 +1,5 @@
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from sqlglot.expressions import Expression, Column, EQ, Literal, Where
 from typing import List, Dict, Any
 from catalog.table import Table  # import your Table class
