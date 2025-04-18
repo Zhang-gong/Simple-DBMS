@@ -8,8 +8,7 @@ if __name__ == '__main__':
     schema=Schema("test_schema")
     parser = SQLParser()
     executor = Executor(schema)
-    #build table A
-    #create table
+
 
     sql_create = "CREATE TABLE A (id INT PRIMARY KEY, row TEXT)"
     ast_create= parser.parse(sql_create)
