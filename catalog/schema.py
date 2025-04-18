@@ -10,7 +10,8 @@ class Schema:
         if table.name in self.tables:
             raise ValueError(f"Table '{table.name}' already exists in schema '{self.name}'")
         self.tables[table.name] = table
-
+    def has_table(self, table_name: str) -> bool:
+        return table_name in self.tables
     def get_table(self, table_name: str) -> Table:
         return self.tables.get(table_name)
 
