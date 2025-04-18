@@ -65,6 +65,9 @@ class Executor:
         self.schema.create_table(table)
 
         print(f"✅ Table '{table_name}' created with columns {columns}, primary key: {primary_keys}")
+        self.schema.save()
+        # Save the table to the schema directory
+        print(f"Table '{table_name}' saved to schema '{self.schema.name}' directory.")
 
         #select
     def _execute_select(self, ast: exp.Select):

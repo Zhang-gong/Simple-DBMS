@@ -1,3 +1,6 @@
+import os
+import json
+import csv
 from BTrees.OOBTree import OOBTree
 
 class Table:
@@ -7,8 +10,7 @@ class Table:
         self.primary_key = primary_key
         self.rows = []  # List of row dicts
         self.indexes = {}  # Column -> BTree index
-
-        # build index for primary key
+        # Create a BTree index for the primary key
         # self.indexes[primary_key] = OOBTree()
 
     def insert(self, row: dict):
@@ -16,15 +18,11 @@ class Table:
             raise ValueError("Column mismatch")
 
         pk = row[self.primary_key]
-
-        # 检查主键重复（从索引中查）
-        if pk in self.indexes[self.primary_key]:
+        if self.primary_key in self.indexes and pk in self.indexes[self.primary_key]:
             raise ValueError(f"Duplicate primary key: {pk}")
 
-        # 插入行
         self.rows.append(row)
 
-        # 更新所有索引（至少主键）
         for col, index in self.indexes.items():
             index[row[col]] = row
 
@@ -35,16 +33,10 @@ class Table:
         return self.indexes[self.primary_key].get(key)
 
     def range_query(self, start_key, end_key):
-        """
-
-        """
         index = self.indexes[self.primary_key]
         return list(index.values(start_key, end_key))
 
     def create_index(self, column: str):
-        """
-
-        """
         if column not in self.columns:
             raise ValueError(f"Column {column} does not exist.")
         if column in self.indexes:
@@ -54,10 +46,27 @@ class Table:
         btree = OOBTree()
         for row in self.rows:
             key = row[column]
-            # 若值重复，用 list 存储
             if key in btree:
                 btree[key].append(row)
             else:
                 btree[key] = [row]
         self.indexes[column] = btree
         print(f"✅ Index created on column '{column}'")
+
+    def save(self, directory: str):
+        os.makedirs(directory, exist_ok=True)
+
+        # Save table definition as JSON
+        definition = {
+            "name": self.name,
+            "columns": self.columns,
+            "primary_key": self.primary_key
+        }
+        with open(os.path.join(directory, "definition.json"), "w", encoding="utf-8") as f:
+            json.dump(definition, f, indent=4)
+
+        # Save rows as CSV
+        with open(os.path.join(directory, "data.csv"), "w", newline='', encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=self.columns)
+            writer.writeheader()
+            writer.writerows(self.rows)
