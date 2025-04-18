@@ -16,6 +16,13 @@ class Executor:
         """
         self.schema = schema
 
+
+
+
+
+
+
+
     def execute(self, ast):
         """
         Execute a SQL AST on the registered tables.
@@ -27,16 +34,26 @@ class Executor:
             List[Dict[str, Any]]: Result rows.
         """
 
-        #create
-        # Check if the AST is a SELECT statement
         if isinstance(ast, exp.Create):
-            self._execute_create( ast)
+            self._execute_create(ast)
         elif isinstance(ast, exp.Select):
             self._execute_select(ast)
+        elif isinstance(ast, exp.Insert):
+            self._execute_insert(ast)
+
+
+
+
+
+
+
+
+
+
 
     def _execute_create(self, ast: exp.Create):
         """
-        Execute a CREATE TABLE statement with primary key support.
+        Execute a CREATE TABLE statement with primary key and type support.
         """
         table_name = ast.this.this.this.name
         columns = []
@@ -45,15 +62,19 @@ class Executor:
         for column_def in ast.this.expressions:
             if isinstance(column_def, exp.ColumnDef):
                 col_name = column_def.name
-                columns.append(col_name)
+                col_type = column_def.args["kind"].sql().upper()
 
-                # 检查是否有 PRIMARY KEY 附加约束
+                if col_type not in ["INT", "TEXT"]:
+                    raise ValueError(f"Unsupported column type: {col_type}")
+
+                columns.append({"name": col_name, "type": col_type})
+
                 constraints = column_def.args.get("constraints") or []
                 for cons in constraints:
                     if isinstance(cons.kind, exp.PrimaryKeyColumnConstraint):
                         primary_keys.append(col_name)
 
-            elif isinstance(column_def, exp.Constraint):  # 表级 PRIMARY KEY
+            elif isinstance(column_def, exp.Constraint):
                 if isinstance(column_def.this, exp.PrimaryKey):
                     pk_cols = [col.name for col in column_def.expressions]
                     primary_keys.extend(pk_cols)
@@ -61,18 +82,31 @@ class Executor:
         if self.schema.has_table(table_name):
             raise Exception(f"Table '{table_name}' already exists.")
 
-        table = Table(table_name, columns, primary_key=primary_keys)
+        if len(primary_keys) != 1:
+            raise Exception("Only one primary key is supported.")
+
+        table = Table(table_name, columns, primary_key=primary_keys[0])
         self.schema.create_table(table)
 
-        print(f"✅ Table '{table_name}' created with columns {columns}, primary key: {primary_keys}")
+        print(f"✅ Table '{table_name}' created with columns {columns}, primary key: {primary_keys[0]}")
         self.schema.save()
-        # Save the table to the schema directory
         print(f"Table '{table_name}' saved to schema '{self.schema.name}' directory.")
 
-        #select
-    def _execute_select(self, ast: exp.Select):
 
-        # Get table name from AST
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def _execute_select(self, ast: exp.Select):
         from_expr = ast.args.get("from")
         table_expr = from_expr.this
         table_name = table_expr.name
@@ -83,10 +117,8 @@ class Executor:
         table_obj = self.schema.tables[table_name]
         all_rows = table_obj.select_all()
 
-        # Get selected columns
         select_fields = [col.name for col in ast.args["expressions"]]
 
-        # WHERE clause
         where_expr = ast.args.get("where")
         if where_expr:
             condition = where_expr.this
@@ -103,10 +135,61 @@ class Executor:
         else:
             filtered_rows = all_rows
 
-        # Projection
         result = []
         for row in filtered_rows:
             projected = {field: row[field] for field in select_fields}
             result.append(projected)
 
         return result
+    
+
+
+
+
+
+
+
+
+    def _execute_insert(self, ast: exp.Insert):
+        """
+        Execute an INSERT INTO statement.
+        Example: INSERT INTO users (id, name, age) VALUES (1, 'Alice', 20);
+        """
+        table_name = ast.this.this.name  # get table name string
+
+        if table_name not in self.schema.tables:
+            raise ValueError(f"Table '{table_name}' does not exist.")
+
+        table = self.schema.tables[table_name]
+
+        # Extract columns from INSERT statement (optional)
+        col_exprs = ast.args.get("columns")
+        if col_exprs:
+            column_names = [col.name for col in col_exprs]
+        else:
+            column_names = table.column_names
+
+        # ✅ FIX: extract values from the 'expression' node (which contains tuples)
+        values_expr = ast.args["expression"].expressions
+        for tuple_expr in values_expr:
+            value_exprs = tuple_expr.expressions
+            values = [val.name if isinstance(val, exp.Identifier) else val.this for val in value_exprs]
+
+            if len(values) != len(column_names):
+                raise ValueError("Number of values does not match number of columns.")
+
+            # Convert to correct types
+            row = {}
+            for i, col in enumerate(column_names):
+                declared_type = next(c["type"] for c in table.columns if c["name"] == col)
+                if declared_type == "INT":
+                    values[i] = int(values[i])
+                elif declared_type == "TEXT":
+                    values[i] = str(values[i])
+                row[col] = values[i]
+
+            table.insert(row)
+
+        print(f"✅ Inserted row(s) into '{table_name}'")
+        self.schema.save()
+

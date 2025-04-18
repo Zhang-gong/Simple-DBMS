@@ -26,9 +26,20 @@ class Schema:
 
     def save(self):
         # Create schema directory
-        base_path = os.path.join("storage", self.name)
-        os.makedirs(self.name, exist_ok=True)
-
+        base_path = "data" 
         for table in self.tables.values():
-            table_path = os.path.join(self.name, table.name)
+            table_path = os.path.join(base_path, table.name)
             table.save(table_path)
+
+    @staticmethod
+    def load(name: str) -> "Schema":
+        schema = Schema("default")
+        base_path = "data"
+
+        for table_name in os.listdir(base_path):
+            table_path = os.path.join(base_path, table_name)
+            if os.path.isdir(table_path):
+                table = Table.load(table_path)
+                schema.create_table(table)
+
+        return schema
