@@ -37,6 +37,9 @@ class Executor:
             self._execute_drop(ast)
         elif isinstance(ast, exp.Delete):
             self._execute_delete(ast)
+        elif isinstance(ast, exp.Update):
+            self._execute_update(ast)
+
 
 
 
@@ -45,23 +48,51 @@ class Executor:
 
     def _apply_where_clause(self, rows: list[dict], where_expr: exp.Expression) -> list[dict]:
         """
-        Apply a simple WHERE clause with '=' to a list of rows.
-        Returns only the rows that satisfy the condition.
+        Apply WHERE clause with support for =, !=, <, <=, >, >=, AND, OR.
         """
         condition = where_expr.this
+        return [row for row in rows if self._evaluate_condition(row, condition)]
 
-        if not isinstance(condition, exp.EQ):
-            raise NotImplementedError("Only '=' conditions are supported.")
 
-        key = condition.this.name
-        value = condition.expression.this
 
-        try:
-            value = int(value)
-        except:
-            value = str(value)
 
-        return [row for row in rows if row.get(key) == value]
+
+
+
+
+
+    def _evaluate_condition(self, row: dict, condition: exp.Expression) -> bool:
+        """
+        Recursively evaluate a WHERE condition on a single row.
+        Supports: =, !=, <, <=, >, >=, AND, OR
+        """
+        if isinstance(condition, exp.And):
+            return self._evaluate_condition(row, condition.left) and self._evaluate_condition(row, condition.right)
+        elif isinstance(condition, exp.Or):
+            return self._evaluate_condition(row, condition.left) or self._evaluate_condition(row, condition.right)
+
+        elif isinstance(condition, (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE)):
+            col = condition.this.name
+            val = condition.expression.this
+
+            try:
+                val = int(val)
+            except:
+                val = str(val)
+
+            row_val = row.get(col)
+
+            if isinstance(condition, exp.EQ): return row_val == val
+            if isinstance(condition, exp.NEQ): return row_val != val
+            if isinstance(condition, exp.GT): return row_val > val
+            if isinstance(condition, exp.GTE): return row_val >= val
+            if isinstance(condition, exp.LT): return row_val < val
+            if isinstance(condition, exp.LTE): return row_val <= val
+
+        else:
+            raise NotImplementedError(f"Unsupported condition type: {type(condition)}")
+
+
 
 
 
@@ -121,7 +152,7 @@ class Executor:
             raise Exception(f"Table '{table_name}' already exists.")
 
         if len(primary_keys) != 1:
-            raise Exception("Only one primary key is supported.")
+            raise Exception("You must define exactly one primary key.")
 
         table = Table(table_name, columns, primary_key=primary_keys[0])
         self.schema.create_table(table)
@@ -202,7 +233,7 @@ class Executor:
         for row in filtered_rows:
             projected = {field: row[field] for field in select_fields}
             result.append(projected)
-
+        
         return result
 
 
@@ -236,7 +267,7 @@ class Executor:
         values_expr = ast.args["expression"].expressions
         for tuple_expr in values_expr:
             value_exprs = tuple_expr.expressions
-            values = [val.name if isinstance(val, exp.Identifier) else val.this for val in value_exprs]
+            values = [val.this for val in value_exprs]
 
             if len(values) != len(column_names):
                 raise ValueError("Number of values does not match number of columns.")
@@ -278,5 +309,72 @@ class Executor:
             shutil.rmtree(table_path)
 
         print(f"🗑️ Table '{table_name}' has been dropped.")
+
+
+
+
+
+
+
+
+    
+    def _execute_update(self, ast: exp.Update):
+        """
+        Execute an UPDATE statement.
+        Supports:
+            UPDATE table SET column = value;
+            UPDATE table SET column = value WHERE column = value;
+        """
+        table_name = ast.this.name
+
+        if table_name not in self.schema.tables:
+            raise ValueError(f"Table '{table_name}' does not exist.")
+
+        table = self.schema.tables[table_name]
+
+        # 1. Parse SET clause
+        assignments = ast.expressions
+        updates = {}
+        for assign in assignments:
+            col_name = assign.this.name
+            value = assign.expression.this
+            updates[col_name] = value
+
+        # 2. Validate columns and convert types
+        for col, val in updates.items():
+            col_type = next(c["type"] for c in table.columns if c["name"] == col)
+            if col_type == "INT":
+                updates[col] = int(val)
+            elif col_type == "TEXT":
+                updates[col] = str(val)
+
+        # 3. Apply WHERE (optional)
+        where_expr = ast.args.get("where")
+        if where_expr:
+            target_rows = self._apply_where_clause(table.rows, where_expr)
+        else:
+            target_rows = table.rows
+
+        # 4. Perform updates
+        update_count = 0
+        for row in table.rows:
+            if row in target_rows:
+                for col, val in updates.items():
+                    row[col] = val
+                update_count += 1
+
+        self.schema.save()
+        print(f"📝 Updated {update_count} row(s) in '{table_name}'.")
+
+
+    
+
+
+
+
+
+
+    
+
 
 

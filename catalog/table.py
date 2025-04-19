@@ -27,14 +27,14 @@ class Table:
             raise ValueError("Column mismatch")
 
         self._validate_row_types(row)
-        #check foreign keys
-        for fk in self.foreign_keys:
-            ref_table = self.schema.get_table(fk.ref_table)
-            ref_values = [r[fk.ref_col] for r in ref_table.select_all()]
-            if row[fk.local_col] not in ref_values:
-                raise ValueError(
-                    f"Foreign key constraint failed: {row[fk.local_col]} not found in {fk.ref_table}.{fk.ref_col}"
-                )
+        # #check foreign keys
+        # for fk in self.foreign_keys:
+        #     ref_table = self.schema.get_table(fk.ref_table)
+        #     ref_values = [r[fk.ref_col] for r in ref_table.select_all()]
+        #     if row[fk.local_col] not in ref_values:
+        #         raise ValueError(
+        #             f"Foreign key constraint failed: {row[fk.local_col]} not found in {fk.ref_table}.{fk.ref_col}"
+        #         )
 
         pk = row[self.primary_key]
 

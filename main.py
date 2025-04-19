@@ -75,7 +75,10 @@ def main():
                     print(f"{YELLOW}⏱ Execution Time: {duration_ms:.2f} ms{RESET}")
 
                     if result is not None:
+                        print(f"{YELLOW}{len(result)} row(s) returned.{RESET}")
                         print_mysql_table(result)
+                       
+
 
                 except Exception as e:
                     print(f"{RED}❌ Error: {e}{RESET}")
