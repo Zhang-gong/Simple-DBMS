@@ -11,11 +11,10 @@ class ForeignKey:
         self.policy = policy.upper()  # "RESTRICT" or "CASCADE"
 
 class Table:
-    def __init__(self, name: str, columns: list[dict], primary_key: str, foreign_keys: list[ForeignKey] = None):
+    def __init__(self, name: str, columns: list[dict], primary_key: str):
         self.name = name
         self.columns = columns  # List of {name, type}
         self.primary_key = primary_key
-        self.foreign_keys = foreign_keys or []
         self.column_names = [col["name"] for col in columns]
         self.rows = []  # List of row dicts
         self.indexes = {}  # Column -> BTree index
@@ -26,6 +25,9 @@ class Table:
     def insert(self, row: dict):
         if set(row.keys()) != set(self.column_names):
             raise ValueError("Column mismatch")
+
+        self._validate_row_types(row)
+        #check foreign keys
         for fk in self.foreign_keys:
             ref_table = self.schema.get_table(fk.ref_table)
             ref_values = [r[fk.ref_col] for r in ref_table.select_all()]
@@ -34,9 +36,16 @@ class Table:
                     f"Foreign key constraint failed: {row[fk.local_col]} not found in {fk.ref_table}.{fk.ref_col}"
                 )
 
-        pk_value = row[self.primary_key]
-        if any(r[self.primary_key] == pk_value for r in self.rows):
-            raise ValueError(f"Duplicate primary key: {pk_value}")
+        pk = row[self.primary_key]
+
+        # Enforce primary key uniqueness manually (if no index)
+        if self.primary_key not in self.indexes:
+            if any(existing_row[self.primary_key] == pk for existing_row in self.rows):
+                raise ValueError(f"Duplicate primary key: {pk}")
+        else:
+            if pk in self.indexes[self.primary_key]:
+                raise ValueError(f"Duplicate primary key: {pk}")
+
         self.rows.append(row)
         # Update the index for the primary key
         for col, index in self.indexes.items():

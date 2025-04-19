@@ -10,6 +10,32 @@ RED = "\033[91m"
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
 
+
+
+def print_mysql_table(rows: list[dict]):
+    if not rows:
+        print("(empty set)")
+        return
+
+    headers = list(rows[0].keys())
+    col_widths = {h: max(len(h), max(len(str(row[h])) for row in rows)) for h in headers}
+
+    def format_row(row):
+        return "| " + " | ".join(f"{str(row[h]).ljust(col_widths[h])}" for h in headers) + " |"
+
+    border = "+-" + "-+-".join("-" * col_widths[h] for h in headers) + "-+"
+    header_row = "| " + " | ".join(h.ljust(col_widths[h]) for h in headers) + " |"
+
+    print(border)
+    print(header_row)
+    print(border)
+    for row in rows:
+        print(format_row(row))
+    print(border)
+
+
+
+
 def main():
     print("📦 Simple-DBMS started")
     print("ℹ️  Type SQL statements ending in ';'. Type 'quit' to exit.\n")
@@ -49,8 +75,7 @@ def main():
                     print(f"{YELLOW}⏱ Execution Time: {duration_ms:.2f} ms{RESET}")
 
                     if result is not None:
-                        for row in result:
-                            print(row)
+                        print_mysql_table(result)
 
                 except Exception as e:
                     print(f"{RED}❌ Error: {e}{RESET}")
