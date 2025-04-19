@@ -3,8 +3,7 @@ import os
 from sqlglot import exp
 from sqlglot.expressions import Expression, Column, EQ, Literal, Where
 from typing import List, Dict, Any
-from catalog.table import Table  # import your Table class
-
+from catalog.table import Table, ForeignKey  # import Table class/ForeignKey class
 class Executor:
     """
     Executor runs queries defined by an AST on registered Table instances.
@@ -15,13 +14,6 @@ class Executor:
         Initialize the executor with a schema object.
         """
         self.schema = schema
-
-
-
-
-
-
-
 
     def execute(self, ast):
         """
@@ -42,15 +34,6 @@ class Executor:
             self._execute_insert(ast)
 
 
-
-
-
-
-
-
-
-
-
     def _execute_create(self, ast: exp.Create):
         """
         Execute a CREATE TABLE statement with primary key and type support.
@@ -58,6 +41,7 @@ class Executor:
         table_name = ast.this.this.this.name
         columns = []
         primary_keys = []
+        foreign_keys = []
 
         for column_def in ast.this.expressions:
             if isinstance(column_def, exp.ColumnDef):
@@ -74,10 +58,24 @@ class Executor:
                     if isinstance(cons.kind, exp.PrimaryKeyColumnConstraint):
                         primary_keys.append(col_name)
 
-            elif isinstance(column_def, exp.Constraint):
-                if isinstance(column_def.this, exp.PrimaryKey):
-                    pk_cols = [col.name for col in column_def.expressions]
-                    primary_keys.extend(pk_cols)
+            #check if the column is a foreign key
+
+            elif isinstance(column_def, exp.ForeignKey):
+                local_cols = [col.name for col in column_def.expressions]
+                ref_table = column_def.args['reference'].this.this.name
+                ref_cols = column_def.args['reference'].this.expressions[0].name
+
+                if len(local_cols) != 1:
+                    raise ValueError("Only single-column foreign keys are supported for now.")
+
+                # referenced table and column(s)
+                fk = ForeignKey(
+                    local_col=local_cols[0],
+                    ref_table=ref_table,
+                    ref_col=ref_cols[0],
+                    policy="RESTRICT"  # 可扩展后支持 ast.args["on_delete"]
+                )
+                foreign_keys.append(fk)
 
         if self.schema.has_table(table_name):
             raise Exception(f"Table '{table_name}' already exists.")
@@ -87,6 +85,9 @@ class Executor:
 
         table = Table(table_name, columns, primary_key=primary_keys[0])
         self.schema.create_table(table)
+
+        for fk in foreign_keys:
+            self.schema.referenced_by.setdefault(fk.ref_table, []).append((table_name, fk))
 
         print(f"✅ Table '{table_name}' created with columns {columns}, primary key: {primary_keys[0]}")
         self.schema.save()

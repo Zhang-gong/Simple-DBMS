@@ -3,11 +3,19 @@ import json
 import csv
 from BTrees.OOBTree import OOBTree
 
+class ForeignKey:
+    def __init__(self, local_col: str, ref_table: str, ref_col: str, policy: str = "RESTRICT"):
+        self.local_col = local_col
+        self.ref_table = ref_table
+        self.ref_col = ref_col
+        self.policy = policy.upper()  # "RESTRICT" or "CASCADE"
+
 class Table:
-    def __init__(self, name: str, columns: list[dict], primary_key: str):
+    def __init__(self, name: str, columns: list[dict], primary_key: str, foreign_keys: list[ForeignKey] = None):
         self.name = name
         self.columns = columns  # List of {name, type}
         self.primary_key = primary_key
+        self.foreign_keys = foreign_keys or []
         self.column_names = [col["name"] for col in columns]
         self.rows = []  # List of row dicts
         self.indexes = {}  # Column -> BTree index
@@ -18,15 +26,19 @@ class Table:
     def insert(self, row: dict):
         if set(row.keys()) != set(self.column_names):
             raise ValueError("Column mismatch")
+        for fk in self.foreign_keys:
+            ref_table = self.schema.get_table(fk.ref_table)
+            ref_values = [r[fk.ref_col] for r in ref_table.select_all()]
+            if row[fk.local_col] not in ref_values:
+                raise ValueError(
+                    f"Foreign key constraint failed: {row[fk.local_col]} not found in {fk.ref_table}.{fk.ref_col}"
+                )
 
-        # self._validate_row_types(row)  # ← uncomment once INSERT is active
-
-        pk = row[self.primary_key]
-        if self.primary_key in self.indexes and pk in self.indexes[self.primary_key]:
-            raise ValueError(f"Duplicate primary key: {pk}")
-
+        pk_value = row[self.primary_key]
+        if any(r[self.primary_key] == pk_value for r in self.rows):
+            raise ValueError(f"Duplicate primary key: {pk_value}")
         self.rows.append(row)
-
+        # Update the index for the primary key
         for col, index in self.indexes.items():
             index[row[col]] = row
 

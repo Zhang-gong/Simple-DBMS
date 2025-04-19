@@ -66,3 +66,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+#INSERT INTO students (id, name,age) VALUES (1, 'Alice', 24);
+#CREATE TABLE order (oder_id INT PRIMARY KEY, price INT, student_id INT,FOREIGN KEY (student_id) REFERENCES Student(id),age INT,FOREIGN KEY (age) REFERENCES Student(age));
+#INSERT INTO order (oder_id, price, student_id) VALUES (1, 20, 1);

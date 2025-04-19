@@ -2,6 +2,7 @@
 
 ## Catalog & Schema
 - [x] Define `Schema` and `Table` with primary key support
+- [ ] Primary key constraint enforcement(uniqueness)
 - [ ] Add foreign key tracking and validation
 
 ## Parser (using sqlglot)
