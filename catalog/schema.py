@@ -14,8 +14,8 @@ class Schema:
         if table.name in self.tables:
             raise ValueError(f"Table '{table.name}' already exists in schema '{self.name}'")
         self.tables[table.name] = table
-        for fk in table.foreign_keys:
-            self.referenced_by.setdefault(fk.ref_table, []).append((table.name, fk))
+        # for fk in table.foreign_keys:
+        #     self.referenced_by.setdefault(fk.ref_table, []).append((table.name, fk))
 
     def has_table(self, table_name: str) -> bool:
         return table_name in self.tables
