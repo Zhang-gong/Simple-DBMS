@@ -19,11 +19,17 @@ class Table:
         if set(row.keys()) != set(self.column_names):
             raise ValueError("Column mismatch")
 
-        # self._validate_row_types(row)  # ← uncomment once INSERT is active
+        self._validate_row_types(row)
 
         pk = row[self.primary_key]
-        if self.primary_key in self.indexes and pk in self.indexes[self.primary_key]:
-            raise ValueError(f"Duplicate primary key: {pk}")
+
+        # Enforce primary key uniqueness manually (if no index)
+        if self.primary_key not in self.indexes:
+            if any(existing_row[self.primary_key] == pk for existing_row in self.rows):
+                raise ValueError(f"Duplicate primary key: {pk}")
+        else:
+            if pk in self.indexes[self.primary_key]:
+                raise ValueError(f"Duplicate primary key: {pk}")
 
         self.rows.append(row)
 

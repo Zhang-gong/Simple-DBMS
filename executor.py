@@ -37,13 +37,38 @@ class Executor:
         if isinstance(ast, exp.Create):
             self._execute_create(ast)
         elif isinstance(ast, exp.Select):
-            self._execute_select(ast)
+            return self._execute_select(ast)
         elif isinstance(ast, exp.Insert):
             self._execute_insert(ast)
+        elif isinstance(ast, exp.Drop):
+            self._execute_drop(ast)
+        elif isinstance(ast, exp.Delete):
+            self._execute_delete(ast)
 
 
 
 
+
+
+    def _apply_where_clause(self, rows: list[dict], where_expr: exp.Expression) -> list[dict]:
+        """
+        Apply a simple WHERE clause with '=' to a list of rows.
+        Returns only the rows that satisfy the condition.
+        """
+        condition = where_expr.this
+
+        if not isinstance(condition, exp.EQ):
+            raise NotImplementedError("Only '=' conditions are supported.")
+
+        key = condition.this.name
+        value = condition.expression.this
+
+        try:
+            value = int(value)
+        except:
+            value = str(value)
+
+        return [row for row in rows if row.get(key) == value]
 
 
 
@@ -94,6 +119,34 @@ class Executor:
 
 
 
+    def _execute_delete(self, ast: exp.Delete):
+        """
+        Execute a DELETE FROM statement.
+        Supports:
+            DELETE FROM table;
+            DELETE FROM table WHERE column = value;
+        """
+        table_name = ast.this.this.name
+
+        if table_name not in self.schema.tables:
+            raise ValueError(f"Table '{table_name}' does not exist.")
+
+        table = self.schema.tables[table_name]
+        original_count = len(table.rows)
+
+        where_expr = ast.args.get("where")
+        if where_expr:
+            matching_rows = self._apply_where_clause(table.rows, where_expr)
+            table.rows = [row for row in table.rows if row not in matching_rows]
+        else:
+            table.rows.clear()
+
+        deleted_count = original_count - len(table.rows)
+        self.schema.save()
+        print(f"🗑️ Deleted {deleted_count} row(s) from '{table_name}'.")
+
+
+
 
 
 
@@ -121,17 +174,7 @@ class Executor:
 
         where_expr = ast.args.get("where")
         if where_expr:
-            condition = where_expr.this
-            if isinstance(condition, EQ):
-                key = condition.this.name
-                value = condition.expression.this
-                try:
-                    value = int(value)
-                except:
-                    pass
-                filtered_rows = [row for row in all_rows if row.get(key) == value]
-            else:
-                raise NotImplementedError("Only '=' condition is supported.")
+            filtered_rows = self._apply_where_clause(all_rows, where_expr)
         else:
             filtered_rows = all_rows
 
@@ -141,7 +184,7 @@ class Executor:
             result.append(projected)
 
         return result
-    
+        
 
 
 
@@ -192,4 +235,28 @@ class Executor:
 
         print(f"✅ Inserted row(s) into '{table_name}'")
         self.schema.save()
+
+
+
+    def _execute_drop(self, ast: exp.Drop):
+        """
+        Execute a DROP TABLE statement.
+        Example: DROP TABLE users;
+        """
+        table_name = ast.this.this.name  # Get the table name as a string
+
+        if not self.schema.has_table(table_name):
+            raise ValueError(f"Table '{table_name}' does not exist.")
+
+        # 1. Remove from memory
+        self.schema.drop_table(table_name)
+
+        # 2. Delete folder from disk
+        table_path = os.path.join("data", table_name)
+        if os.path.isdir(table_path):
+            import shutil
+            shutil.rmtree(table_path)
+
+        print(f"🗑️ Table '{table_name}' has been dropped.")
+
 
