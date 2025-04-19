@@ -186,7 +186,11 @@ class Executor:
         table_obj = self.schema.tables[table_name]
         all_rows = table_obj.select_all()
 
-        select_fields = [col.name for col in ast.args["expressions"]]
+        expressions = ast.args["expressions"]
+        if len(expressions) == 1 and isinstance(expressions[0], exp.Star):
+            select_fields = table_obj.column_names
+        else:
+            select_fields = [col.name for col in expressions]
 
         where_expr = ast.args.get("where")
         if where_expr:
@@ -200,6 +204,7 @@ class Executor:
             result.append(projected)
 
         return result
+
 
 
 
