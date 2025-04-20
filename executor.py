@@ -4,6 +4,7 @@ from sqlglot import exp
 from sqlglot.expressions import Expression, Column, EQ, Literal, Where
 from typing import List, Dict, Any
 from catalog.table import Table, ForeignKey  # import your Table class
+from itertools import product
 
 class Executor:
     """
@@ -37,6 +38,9 @@ class Executor:
             self._execute_drop(ast)
         elif isinstance(ast, exp.Delete):
             self._execute_delete(ast)
+        elif isinstance(ast, exp.Update):
+            self._execute_update(ast)
+
 
 
 
@@ -45,23 +49,58 @@ class Executor:
 
     def _apply_where_clause(self, rows: list[dict], where_expr: exp.Expression) -> list[dict]:
         """
-        Apply a simple WHERE clause with '=' to a list of rows.
-        Returns only the rows that satisfy the condition.
+        Apply WHERE clause with support for =, !=, <, <=, >, >=, AND, OR.
         """
         condition = where_expr.this
+        return [row for row in rows if self._evaluate_condition(row, condition)]
 
-        if not isinstance(condition, exp.EQ):
-            raise NotImplementedError("Only '=' conditions are supported.")
 
-        key = condition.this.name
-        value = condition.expression.this
 
-        try:
-            value = int(value)
-        except:
-            value = str(value)
 
-        return [row for row in rows if row.get(key) == value]
+
+
+
+
+
+    def _evaluate_condition(self, row: dict, condition: exp.Expression) -> bool:
+        """
+        Evaluate WHERE condition. Supports =, !=, <, >, <=, >=, AND, OR.
+        """
+        if isinstance(condition, exp.And):
+            return self._evaluate_condition(row, condition.left) and self._evaluate_condition(row, condition.right)
+
+        if isinstance(condition, exp.Or):
+            return self._evaluate_condition(row, condition.left) or self._evaluate_condition(row, condition.right)
+
+        if isinstance(condition, (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE)):
+            # Get the column side of the condition
+            col_expr = condition.this
+            if isinstance(col_expr, exp.Column):
+                col_name = col_expr.output_name
+                table_prefix = col_expr.table
+                key = f"{table_prefix}.{col_name}" if table_prefix else col_name
+            else:
+                key = col_expr.name
+
+            # Get the right-hand value
+            val = condition.expression.this
+            try:
+                val = int(val)
+            except:
+                val = str(val)
+
+            row_val = row.get(key)
+
+            if isinstance(condition, exp.EQ): return row_val == val
+            if isinstance(condition, exp.NEQ): return row_val != val
+            if isinstance(condition, exp.GT): return row_val > val
+            if isinstance(condition, exp.GTE): return row_val >= val
+            if isinstance(condition, exp.LT): return row_val < val
+            if isinstance(condition, exp.LTE): return row_val <= val
+
+        raise NotImplementedError(f"Unsupported condition type: {type(condition)}")
+
+
 
 
 
@@ -121,7 +160,7 @@ class Executor:
             raise Exception(f"Table '{table_name}' already exists.")
 
         if len(primary_keys) != 1:
-            raise Exception("Only one primary key is supported.")
+            raise Exception("You must define exactly one primary key.")
 
         table = Table(table_name, columns, primary_key=primary_keys[0])
         self.schema.create_table(table)
@@ -132,6 +171,9 @@ class Executor:
         print(f"✅ Table '{table_name}' created with columns {columns}, primary key: {primary_keys[0]}")
         self.schema.save()
         print(f"Table '{table_name}' saved to schema '{self.schema.name}' directory.")
+
+
+
 
 
 
@@ -176,34 +218,100 @@ class Executor:
 
 
     def _execute_select(self, ast: exp.Select):
-        from_expr = ast.args.get("from")
-        table_expr = from_expr.this
-        table_name = table_expr.name
+        from_clause = ast.args.get("from")
 
-        if table_name not in self.schema.tables:
-            raise ValueError(f"Table '{table_name}' not found.")
-
-        table_obj = self.schema.tables[table_name]
-        all_rows = table_obj.select_all()
-
-        expressions = ast.args["expressions"]
-        if len(expressions) == 1 and isinstance(expressions[0], exp.Star):
-            select_fields = table_obj.column_names
+        from_exprs = []
+        if isinstance(from_clause, exp.From):
+            if isinstance(from_clause.this, exp.Table):
+                # single table case
+                from_exprs = [from_clause.this]
+            elif hasattr(from_clause, "expressions") and from_clause.expressions:
+                # multiple tables
+                from_exprs = from_clause.expressions
+            else:
+                raise ValueError("Invalid FROM clause structure")
         else:
-            select_fields = [col.name for col in expressions]
+            raise ValueError("Missing FROM clause")
 
+        table_objs = []
+        alias_map = {}
+
+        for table_expr in from_exprs:
+            if isinstance(table_expr, exp.Table):
+                # ✅ precisely correct extraction:
+                table_name = table_expr.this.this
+                alias = table_expr.alias_or_name
+            else:
+                raise ValueError(f"Unsupported FROM clause expression: {type(table_expr)}")
+
+            if table_name not in self.schema.tables:
+                raise ValueError(f"Table '{table_name}' not found.")
+
+            alias_map[alias] = table_name
+            table_objs.append((alias, self.schema.tables[table_name]))
+
+        row_sets = [table.select_all() for _, table in table_objs]
+        all_combinations = list(product(*row_sets))
+
+
+        prefix_keys = len(table_objs) > 1 or any(alias != table.name for alias, table in table_objs)
+
+        combined_rows = []
+        for combo in all_combinations:
+            merged = {}
+            for (alias, _), row in zip(table_objs, combo):
+                for k, v in row.items():
+                    key = f"{alias}.{k}" if prefix_keys else k
+                    merged[key] = v
+            combined_rows.append(merged)
+
+        # WHERE clause
         where_expr = ast.args.get("where")
         if where_expr:
-            filtered_rows = self._apply_where_clause(all_rows, where_expr)
-        else:
-            filtered_rows = all_rows
+            combined_rows = [row for row in combined_rows if self._evaluate_condition(row, where_expr.this)]
 
+        # SELECT projection
+        expressions = ast.args["expressions"]
         result = []
-        for row in filtered_rows:
-            projected = {field: row[field] for field in select_fields}
-            result.append(projected)
+
+        if len(expressions) == 1 and isinstance(expressions[0], exp.Star):
+            result = combined_rows
+        else:
+            for row in combined_rows:
+                projected = {}
+                for expr in expressions:
+                    alias = expr.alias if isinstance(expr, exp.Alias) else None
+                    col = expr.find(exp.Column)
+
+                    if not col:
+                        raise ValueError(f"Could not resolve column in SELECT: {expr}")
+
+                    col_name = col.output_name
+                    table_prefix = col.table
+                    key = f"{table_prefix}.{col_name}" if table_prefix or prefix_keys else col_name
+                    output_key = alias or key
+                    projected[output_key] = row.get(key, None)
+
+                result.append(projected)
 
         return result
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -236,7 +344,7 @@ class Executor:
         values_expr = ast.args["expression"].expressions
         for tuple_expr in values_expr:
             value_exprs = tuple_expr.expressions
-            values = [val.name if isinstance(val, exp.Identifier) else val.this for val in value_exprs]
+            values = [val.this for val in value_exprs]
 
             if len(values) != len(column_names):
                 raise ValueError("Number of values does not match number of columns.")
@@ -278,6 +386,235 @@ class Executor:
             shutil.rmtree(table_path)
 
         print(f"🗑️ Table '{table_name}' has been dropped.")
+
+
+
+
+
+
+
+
+
+    def _execute_update(self, ast: exp.Update):
+        """
+        Execute an UPDATE statement.
+        Supports:
+            UPDATE table SET column = value;
+            UPDATE table SET column = value WHERE column = value;
+        """
+        table_name = ast.this.name
+
+        if table_name not in self.schema.tables:
+            raise ValueError(f"Table '{table_name}' does not exist.")
+
+        table = self.schema.tables[table_name]
+
+        # 1. Parse SET clause
+        assignments = ast.expressions
+        updates = {}
+        for assign in assignments:
+            col_name = assign.this.name
+            value = assign.expression.this
+            updates[col_name] = value
+
+        # 2. Validate columns and convert types
+        for col, val in updates.items():
+            col_type = next(c["type"] for c in table.columns if c["name"] == col)
+            if col_type == "INT":
+                updates[col] = int(val)
+            elif col_type == "TEXT":
+                updates[col] = str(val)
+
+        # 3. Apply WHERE (optional)
+        where_expr = ast.args.get("where")
+        if where_expr:
+            target_rows = self._apply_where_clause(table.rows, where_expr)
+        else:
+            target_rows = table.rows
+
+        # 4. Perform updates
+        update_count = 0
+        for row in table.rows:
+            if row in target_rows:
+                for col, val in updates.items():
+                    row[col] = val
+                update_count += 1
+
+        self.schema.save()
+        print(f"📝 Updated {update_count} row(s) in '{table_name}'.")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def _execute_select(self, ast: exp.Select):
+        from_clause = ast.args.get("from")
+
+        if not isinstance(from_clause, exp.From):
+            raise ValueError("Missing FROM clause")
+
+        table_objs = []
+        alias_map = []
+
+        # First table (FROM clause)
+        first_table_expr = from_clause.this
+        if isinstance(first_table_expr, exp.Table):
+            table_name = first_table_expr.this.this
+            alias = first_table_expr.alias_or_name
+            if table_name not in self.schema.tables:
+                raise ValueError(f"Table '{table_name}' not found.")
+            alias_map.append(alias)
+            table_objs.append((alias, self.schema.tables[table_name]))
+        else:
+            raise ValueError(f"Unsupported FROM expression: {type(first_table_expr)}")
+
+        # JOINed tables
+        join_exprs = ast.args.get("joins", [])
+        for join in join_exprs:
+            join_table_expr = join.this
+            if isinstance(join_table_expr, exp.Table):
+                table_name = join_table_expr.this.this
+                alias = join_table_expr.alias_or_name
+                if table_name not in self.schema.tables:
+                    raise ValueError(f"Table '{table_name}' not found.")
+                alias_map.append(alias)
+                table_objs.append((alias, self.schema.tables[table_name]))
+            else:
+                raise ValueError(f"Unsupported JOIN expression: {type(join_table_expr)}")
+
+        # Get rows
+        row_sets = [table.select_all() for _, table in table_objs]
+
+        # Cartesian product
+        raw_combinations = list(product(*row_sets))
+
+        # Apply JOIN ON conditions
+        on_conditions = [join.args.get("on") for join in join_exprs]
+        filtered_combinations = []
+
+        for combo in raw_combinations:
+            merged = {}
+            for (alias, _), row in zip(table_objs, combo):
+                for k, v in row.items():
+                    merged[f"{alias}.{k}"] = v
+
+            passed = True
+            for condition in on_conditions:
+                if condition and not self._evaluate_condition(merged, condition):
+                    passed = False
+                    break
+
+            if passed:
+                filtered_combinations.append(combo)
+
+        all_combinations = filtered_combinations
+
+        prefix_keys = len(table_objs) > 1 or any(alias != table.name for alias, table in table_objs)
+
+        combined_rows = []
+        for combo in all_combinations:
+            merged = {}
+            for (alias, _), row in zip(table_objs, combo):
+                for k, v in row.items():
+                    key = f"{alias}.{k}" if prefix_keys else k
+                    merged[key] = v
+            combined_rows.append(merged)
+
+        # WHERE clause
+        where_expr = ast.args.get("where")
+        if where_expr:
+            combined_rows = [row for row in combined_rows if self._evaluate_condition(row, where_expr.this)]
+
+        # SELECT projection
+        expressions = ast.args["expressions"]
+        result = []
+
+        if len(expressions) == 1 and isinstance(expressions[0], exp.Star):
+            result = combined_rows
+        else:
+            for row in combined_rows:
+                projected = {}
+                for expr in expressions:
+                    if isinstance(expr, exp.Column) and isinstance(expr.this, exp.Star):
+                        table_prefix = expr.table
+                        for k, v in row.items():
+                            if k.startswith(f"{table_prefix}."):
+                                projected[k] = v
+                        continue
+
+                    alias = expr.alias if isinstance(expr, exp.Alias) else None
+                    col = expr.find(exp.Column)
+
+                    if not col:
+                        raise ValueError(f"Could not resolve column in SELECT: {expr}")
+
+                    col_name = col.output_name
+                    table_prefix = col.table
+                    key = f"{table_prefix}.{col_name}" if table_prefix or prefix_keys else col_name
+                    output_key = alias or key
+                    projected[output_key] = row.get(key, None)
+
+                result.append(projected)
+
+        return result
+
+
+
+
+
+
+
+
+    def _evaluate_condition(self, row: dict, condition: exp.Expression) -> bool:
+        if isinstance(condition, exp.And):
+            return self._evaluate_condition(row, condition.left) and self._evaluate_condition(row, condition.right)
+
+        if isinstance(condition, exp.Or):
+            return self._evaluate_condition(row, condition.left) or self._evaluate_condition(row, condition.right)
+
+        if isinstance(condition, (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE)):
+            col_expr = condition.this
+            if isinstance(col_expr, exp.Column):
+                col_name = col_expr.output_name
+                table_prefix = col_expr.table
+                key = f"{table_prefix}.{col_name}" if table_prefix else col_name
+            else:
+                key = col_expr.name
+
+            val_expr = condition.expression
+            if isinstance(val_expr, exp.Column):
+                val_col_name = val_expr.output_name
+                val_prefix = val_expr.table
+                val_key = f"{val_prefix}.{val_col_name}" if val_prefix else val_col_name
+                val = row.get(val_key)
+            else:
+                val = val_expr.this
+                try:
+                    val = int(val)
+                except:
+                    val = str(val)
+
+            row_val = row.get(key)
+
+            if isinstance(condition, exp.EQ): return row_val == val
+            if isinstance(condition, exp.NEQ): return row_val != val
+            if isinstance(condition, exp.GT): return row_val > val
+            if isinstance(condition, exp.GTE): return row_val >= val
+            if isinstance(condition, exp.LT): return row_val < val
+            if isinstance(condition, exp.LTE): return row_val <= val
+
+        raise NotImplementedError(f"Unsupported condition type: {type(condition)}")
 
 
     def check_foreign_key_constraints(self, table_name:str, row: dict):
