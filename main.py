@@ -95,5 +95,15 @@ def main():
 if __name__ == "__main__":
     main()
 #INSERT INTO students (id, name,age) VALUES (1, 'Alice', 24);
-#CREATE TABLE order (oder_id INT PRIMARY KEY, price INT, student_id INT,FOREIGN KEY (student_id) REFERENCES Student(id),age INT,FOREIGN KEY (age) REFERENCES Student(age));
-#INSERT INTO order (oder_id, price, student_id) VALUES (1, 20, 1);
+#CREATE TABLE order (oder_id INT PRIMARY KEY, price INT, student_id INT,FOREIGN KEY (student_id) REFERENCES students(id),age INT,FOREIGN KEY (age) REFERENCES students(age));
+#CREATE TABLE order (oder_id INT PRIMARY KEY, price INT, student_id INT,FOREIGN KEY (student_id) REFERENCES students(id),amount INT);
+#INSERT INTO order (oder_id, price, student_id, amount) VALUES (1, 20, 1, 5);
+#INSERT INTO order (oder_id, price, student_id,amount) VALUES (2, 30, 1, 10);
+
+#INSERT INTO order (oder_id, price, student_id) VALUES ('OID1001', 299.99, 12345);
+#Error: invalid literal for int() with base 10: 'OID1001'
+
+#DELETE FROM "order" WHERE oder_id = 2;
+#DELETE FROM students WHERE id = 1;
+
+#UPDATE "order" SET oder_id = NEW_ID WHERE oder_id = OLD_ID;

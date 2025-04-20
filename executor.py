@@ -147,6 +147,16 @@ class Executor:
                 if len(local_cols) != 1:
                     raise ValueError("Only single-column foreign keys are supported for now.")
 
+                if not self.schema.has_table(ref_table):
+                    raise ValueError(f"Referenced table '{ref_table}' does not exist.")
+                ref_table_obj = self.schema.get_table(ref_table)
+
+                # ✅ 检查引用列是否为主键
+                if ref_cols != ref_table_obj.primary_key:
+                    raise ValueError(
+                        f"Foreign key must reference the PRIMARY KEY of table '{ref_table}'. "
+                        f"But '{ref_cols}' is not the primary key (expected '{ref_table_obj.primary_key}')."
+                    )
                 # referenced table and column(s)
                 fk = ForeignKey(
                     local_col=local_cols[0],
@@ -189,12 +199,14 @@ class Executor:
         if table_name not in self.schema.tables:
             raise ValueError(f"Table '{table_name}' does not exist.")
 
-        table = self.schema.tables[table_name]
+        table = self.schema.get_table(table_name)
         original_count = len(table.rows)
 
         where_expr = ast.args.get("where")
         if where_expr:
-            matching_rows = self._apply_where_clause(table.rows, where_expr)
+            matching_rows = self._apply_where_clause(table.rows, where_expr) #delete matching_rows
+            for row in matching_rows:
+                self.check_foreign_key_constraints_delete(table_name, row)
             table.rows = [row for row in table.rows if row not in matching_rows]
         else:
             table.rows.clear()
@@ -358,7 +370,7 @@ class Executor:
                 elif declared_type == "TEXT":
                     values[i] = str(values[i])
                 row[col] = values[i]
-
+            self.check_foreign_key_constraints(table_name, row)
             table.insert(row)
 
         print(f"✅ Inserted row(s) into '{table_name}'")
@@ -431,6 +443,40 @@ class Executor:
             target_rows = self._apply_where_clause(table.rows, where_expr)
         else:
             target_rows = table.rows
+
+        # Check primary/foreign key constraints for the rows to be updated
+
+        # 4. PK/FK constraint checks BEFORE applying changes
+        pk_col = table.primary_key
+
+        for row in target_rows:
+            old_pk = row[pk_col]
+
+            # 4a. 主键更新检查
+            if pk_col in updates:
+                new_pk = updates[pk_col]
+                # 唯一性检查
+                if new_pk != old_pk and new_pk in table.rows:
+                    raise ValueError(f"Duplicate primary key value {new_pk!r} in '{table_name}'")
+                # 外表引用检查
+                for child_table_name, fk in self.schema.referenced_by.get(table_name, []):
+                    child = self.schema.tables[child_table_name]
+                    for crow in child.select_all():
+                        if crow[fk.local_col] == old_pk:
+                            raise ValueError(
+                                f"Cannot update primary key {old_pk!r} in '{table_name}': "
+                                f"still referenced by '{child_table_name}.{fk.local_col}'"
+                            )
+
+            # 4b. 外键列更新检查（确保新值在父表中存在）
+            for fk in getattr(table, "foreign_keys", []):
+                if fk.local_col in updates:
+                    new_val = updates[fk.local_col]
+                    ref = self.schema.tables[fk.ref_table]
+                    if not any(r[fk.ref_col] == new_val for r in ref.select_all()):
+                        raise ValueError(
+                            f"Foreign key violation: no '{fk.ref_table}.{fk.ref_col}' = {new_val!r}"
+                        )
 
         # 4. Perform updates
         update_count = 0
@@ -576,85 +622,68 @@ class Executor:
 
 
 
-    def _evaluate_condition(self, row: dict, condition: exp.Expression) -> bool:
-        if isinstance(condition, exp.And):
-            return self._evaluate_condition(row, condition.left) and self._evaluate_condition(row, condition.right)
 
-        if isinstance(condition, exp.Or):
-            return self._evaluate_condition(row, condition.left) or self._evaluate_condition(row, condition.right)
-
-        if isinstance(condition, (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE)):
-            col_expr = condition.this
-            if isinstance(col_expr, exp.Column):
-                col_name = col_expr.output_name
-                table_prefix = col_expr.table
-                key = f"{table_prefix}.{col_name}" if table_prefix else col_name
-            else:
-                key = col_expr.name
-
-            val_expr = condition.expression
-            if isinstance(val_expr, exp.Column):
-                val_col_name = val_expr.output_name
-                val_prefix = val_expr.table
-                val_key = f"{val_prefix}.{val_col_name}" if val_prefix else val_col_name
-                val = row.get(val_key)
-            else:
-                val = val_expr.this
-                try:
-                    val = int(val)
-                except:
-                    val = str(val)
-
-            row_val = row.get(key)
-
-            if isinstance(condition, exp.EQ): return row_val == val
-            if isinstance(condition, exp.NEQ): return row_val != val
-            if isinstance(condition, exp.GT): return row_val > val
-            if isinstance(condition, exp.GTE): return row_val >= val
-            if isinstance(condition, exp.LT): return row_val < val
-            if isinstance(condition, exp.LTE): return row_val <= val
-
-        raise NotImplementedError(f"Unsupported condition type: {type(condition)}")
 
 
     def check_foreign_key_constraints(self, table_name:str, row: dict):
         """
         Check if the row satisfies foreign key constraints.
         """
-        for fk in self.schema.referenced_by:
-            """
-                    Check if the row satisfies foreign key constraints defined in its own table.
-                    This checks that for each foreign key, the referenced value exists in the referenced table.
-                    """
-            current_table = self.schema.get_table(table_name)
+        for ref_table_name, fk_list in self.schema.referenced_by.items():
+            for referencing_table, fk in fk_list:
+                # check the referencing table
+                if referencing_table != table_name:
+                    continue
 
-            # 遍历当前表中所有列的外键（反向查询 referenced_by 无法完成这一步）
-            for other_table in self.schema.tables.values():
-                # foreign keys that point to current_table
-                for fk in other_table.foreign_keys if hasattr(other_table, 'foreign_keys') else []:
-                    if fk.ref_table == table_name:
-                        # 跳过：我们现在检查的是 row 作为“引用者”，不是被引用者
-                        continue
+                # check the local column
+                if fk.local_col not in row:
+                    continue
 
-            # 正向遍历当前表定义的外键（需要 current_table.foreign_keys）
-            if not hasattr(current_table, "foreign_keys"):
-                return  # 当前表没有外键定义
+                value_to_check = row[fk.local_col]
 
-            for fk in current_table.foreign_keys:
-                local_val = row.get(fk.local_col)
-                if local_val is None:
-                    continue  # 外键列没填，通常由 NOT NULL 来管
-
-                # 获取被引用的表和列
+                # 拿到被引用的表和列
                 ref_table = self.schema.get_table(fk.ref_table)
-                ref_column = fk.ref_col
+                ref_col = fk.ref_col
 
-                # 搜索主表中是否存在对应值
+                # 检查引用值是否在主表中存在
                 match_found = any(
-                    r.get(ref_column) == local_val for r in ref_table.select_all()
+                    ref_row.get(ref_col) == value_to_check
+                    for ref_row in ref_table.select_all()
                 )
 
                 if not match_found:
                     raise ValueError(
-                        f"Foreign key constraint violation: value '{local_val}' not found in {fk.ref_table}.{ref_column}"
+                        f"Foreign key violation: value '{value_to_check}' in column '{fk.local_col}' "
+                        f"not found in {fk.ref_table}.{ref_col}"
                     )
+
+    def check_foreign_key_constraints_delete(self, table_name: str, row: dict):
+        """
+        Check if the row in `table_name` can be safely deleted,
+        i.e., its primary key is not referenced as a foreign key by any other table.
+        """
+        # 当前表主键值
+        current_table = self.schema.get_table(table_name)
+        pk_col = current_table.primary_key
+        pk_val = row[pk_col]
+
+        # 在 schema.referenced_by 中查找是否有表引用了当前表
+        if table_name not in self.schema.referenced_by:
+            return  # 没有任何表引用当前表，可以安全删除
+
+        for referencing_table_name, fk in self.schema.referenced_by[table_name]:
+            referencing_table = self.schema.get_table(referencing_table_name)
+            local_col = fk.local_col
+
+            for ref_row in referencing_table.select_all():
+                if ref_row.get(local_col) == pk_val:
+                    if fk.policy == "RESTRICT":
+                        raise ValueError(
+                            f"Cannot delete from '{table_name}': primary key value '{pk_val}' "
+                            f"is still referenced by '{referencing_table_name}.{local_col}' (RESTRICT)"
+                        )
+                    elif fk.policy == "CASCADE":
+                        # 这里只是检查，可以返回一个标志或者做递归删除
+                        # 你也可以在真正的 delete 逻辑里执行：
+                        # referencing_table.delete(lambda r: r[local_col] == pk_val)
+                        continue
