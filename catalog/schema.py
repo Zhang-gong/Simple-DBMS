@@ -3,6 +3,8 @@ import json
 from typing import Dict
 from .table import Table
 from .table import ForeignKey
+from sqlglot import exp
+
 class Schema:
     def __init__(self, name: str):
         self.name = name
@@ -14,8 +16,6 @@ class Schema:
         if table.name in self.tables:
             raise ValueError(f"Table '{table.name}' already exists in schema '{self.name}'")
         self.tables[table.name] = table
-        # for fk in table.foreign_keys:
-        #     self.referenced_by.setdefault(fk.ref_table, []).append((table.name, fk))
 
     def has_table(self, table_name: str) -> bool:
         return table_name in self.tables
@@ -42,6 +42,22 @@ class Schema:
         for table in self.tables.values():
             table_path = os.path.join(base_path, table.name)
             table.save(table_path)
+        # Save foreign key metadata
+        foreignkey_data = {}
+        for ref_table, ref_list in self.referenced_by.items():
+            foreignkey_data[ref_table] = []
+            for table_name, fk in ref_list:
+                foreignkey_data[ref_table].append({
+                    "table": table_name,
+                    "columns": fk.local_col,
+                    "ref_table": fk.ref_table,
+                    "ref_columns": fk.ref_col,
+                    "policy": fk.policy,
+                })
+
+        fk_path = os.path.join(base_path, "foreignkey.json")
+        with open(fk_path, "w") as f:
+            json.dump(foreignkey_data, f, indent=2)
 
     @staticmethod
     def load(name: str) -> "Schema":
@@ -53,5 +69,29 @@ class Schema:
             if os.path.isdir(table_path):
                 table = Table.load(table_path)
                 schema.create_table(table)
+
+
+        # Load foreign key metadata
+        fk_path = os.path.join(base_path, "foreignkey.json")
+        if os.path.exists(fk_path):
+            with open(fk_path, "r") as f:
+                fk_data = json.load(f)
+
+                for ref_table, fk_list in fk_data.items():
+                    for fk_entry in fk_list:
+                        referencing_table = fk_entry["table"]
+                        local_col = fk_entry["columns"]
+                        ref_col = fk_entry["ref_columns"]
+                        policy = fk_entry.get("policy", "STRICT")  # 给默认值
+
+                        fk_obj = ForeignKey(
+                            local_col=local_col,
+                            ref_table=fk_entry["ref_table"],
+                            ref_col=ref_col,
+                            policy=policy
+                        )
+                        if ref_table not in schema.referenced_by:
+                            schema.referenced_by[ref_table] = []
+                        schema.referenced_by[ref_table].append((referencing_table, fk_obj))
 
         return schema

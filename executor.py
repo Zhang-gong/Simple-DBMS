@@ -103,7 +103,7 @@ class Executor:
             elif isinstance(column_def, exp.ForeignKey):
                 local_cols = [col.name for col in column_def.expressions]
                 ref_table = column_def.args['reference'].this.this.name
-                ref_cols = column_def.args['reference'].this.expressions[0].name
+                ref_cols = column_def.args['reference'].this.expressions[0].name #list
 
                 if len(local_cols) != 1:
                     raise ValueError("Only single-column foreign keys are supported for now.")
@@ -112,8 +112,8 @@ class Executor:
                 fk = ForeignKey(
                     local_col=local_cols[0],
                     ref_table=ref_table,
-                    ref_col=ref_cols[0],
-                    policy="RESTRICT"  # 可扩展后支持 ast.args["on_delete"]
+                    ref_col=ref_cols,
+                    policy="RESTRICT"  #  ast.args["on_delete"]
                 )
                 foreign_keys.append(fk)
 
@@ -280,3 +280,44 @@ class Executor:
         print(f"🗑️ Table '{table_name}' has been dropped.")
 
 
+    def check_foreign_key_constraints(self, table_name:str, row: dict):
+        """
+        Check if the row satisfies foreign key constraints.
+        """
+        for fk in self.schema.referenced_by:
+            """
+                    Check if the row satisfies foreign key constraints defined in its own table.
+                    This checks that for each foreign key, the referenced value exists in the referenced table.
+                    """
+            current_table = self.schema.get_table(table_name)
+
+            # 遍历当前表中所有列的外键（反向查询 referenced_by 无法完成这一步）
+            for other_table in self.schema.tables.values():
+                # foreign keys that point to current_table
+                for fk in other_table.foreign_keys if hasattr(other_table, 'foreign_keys') else []:
+                    if fk.ref_table == table_name:
+                        # 跳过：我们现在检查的是 row 作为“引用者”，不是被引用者
+                        continue
+
+            # 正向遍历当前表定义的外键（需要 current_table.foreign_keys）
+            if not hasattr(current_table, "foreign_keys"):
+                return  # 当前表没有外键定义
+
+            for fk in current_table.foreign_keys:
+                local_val = row.get(fk.local_col)
+                if local_val is None:
+                    continue  # 外键列没填，通常由 NOT NULL 来管
+
+                # 获取被引用的表和列
+                ref_table = self.schema.get_table(fk.ref_table)
+                ref_column = fk.ref_col
+
+                # 搜索主表中是否存在对应值
+                match_found = any(
+                    r.get(ref_column) == local_val for r in ref_table.select_all()
+                )
+
+                if not match_found:
+                    raise ValueError(
+                        f"Foreign key constraint violation: value '{local_val}' not found in {fk.ref_table}.{ref_column}"
+                    )
