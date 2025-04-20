@@ -460,23 +460,25 @@ class Executor:
                     raise ValueError(f"Duplicate primary key value {new_pk!r} in '{table_name}'")
                 # 外表引用检查
                 for child_table_name, fk in self.schema.referenced_by.get(table_name, []):
-                    child = self.schema.tables[child_table_name]
+                    child = self.schema.get_table(child_table_name)
                     for crow in child.select_all():
                         if crow[fk.local_col] == old_pk:
                             raise ValueError(
-                                f"Cannot update primary key {old_pk!r} in '{table_name}': "
+                                f"Cannot update primary key {pk_col}={old_pk!r} in '{table_name}': "
                                 f"still referenced by '{child_table_name}.{fk.local_col}'"
                             )
 
             # 4b. 外键列更新检查（确保新值在父表中存在）
-            for fk in getattr(table, "foreign_keys", []):
-                if fk.local_col in updates:
-                    new_val = updates[fk.local_col]
-                    ref = self.schema.tables[fk.ref_table]
-                    if not any(r[fk.ref_col] == new_val for r in ref.select_all()):
-                        raise ValueError(
-                            f"Foreign key violation: no '{fk.ref_table}.{fk.ref_col}' = {new_val!r}"
-                        )
+            for parent_table, fk_list in self.schema.referenced_by.items():
+                for child_table, fk in fk_list:
+                    if child_table == table_name and fk.local_col in updates:
+                        new_val = updates[fk.local_col]
+                        parent = self.schema.tables[parent_table]
+                        # 父表找不到对应值就报错
+                        if not any(r[fk.ref_col] == new_val for r in parent.select_all()):
+                            raise ValueError(
+                                f"Foreign key violation: no '{parent_table}.{fk.ref_col}' = {new_val!r}"
+                            )
 
         # 4. Perform updates
         update_count = 0

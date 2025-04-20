@@ -1,4 +1,3 @@
-
 from catalog.schema import Schema
 from executor import Executor
 from sql_parser import SQLParser
@@ -106,4 +105,6 @@ if __name__ == "__main__":
 #DELETE FROM "order" WHERE oder_id = 2;
 #DELETE FROM students WHERE id = 1;
 
-#UPDATE "order" SET oder_id = NEW_ID WHERE oder_id = OLD_ID;
+## check primary key and foreign key constraint in update
+#UPDATE "order" SET student_id = 3 WHERE student_id = 1;
+#UPDATE students SET id = 25 WHERE id = 1;
