@@ -51,7 +51,7 @@ def main():
             print(f"   - {table_name}")
     else:
         print("📂 No tables found in data/")
-
+    
 
     # 2. REPL loop
     buffer = ""
