@@ -17,10 +17,21 @@ def print_mysql_table(rows: list[dict]):
         return
 
     headers = list(rows[0].keys())
-    col_widths = {h: max(len(h), max(len(str(row[h])) for row in rows)) for h in headers}
 
+    # Compute column widths safely
+    col_widths = {}
+    for h in headers:
+        max_len = len(h)
+        for row in rows:
+            val = row.get(h)
+            val_str = "" if val is None else str(val)
+            if len(val_str) > max_len:
+                max_len = len(val_str)
+        col_widths[h] = max_len
+
+    # Build output
     def format_row(row):
-        return "| " + " | ".join(f"{str(row[h]).ljust(col_widths[h])}" for h in headers) + " |"
+        return "| " + " | ".join(str(row.get(h) or "").ljust(col_widths[h]) for h in headers) + " |"
 
     border = "+-" + "-+-".join("-" * col_widths[h] for h in headers) + "-+"
     header_row = "| " + " | ".join(h.ljust(col_widths[h]) for h in headers) + " |"
@@ -31,6 +42,8 @@ def print_mysql_table(rows: list[dict]):
     for row in rows:
         print(format_row(row))
     print(border)
+
+
 
 
 
@@ -76,7 +89,7 @@ def main():
                     if result is not None:
                         print(f"{YELLOW}{len(result)} row(s) returned.{RESET}")
                         print_mysql_table(result)
-                       
+
 
 
                 except Exception as e:

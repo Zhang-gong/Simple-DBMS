@@ -5,7 +5,8 @@ from sqlglot.expressions import Expression, Column, EQ, Literal, Where
 from typing import List, Dict, Any
 from catalog.table import Table, ForeignKey  # import your Table class
 from itertools import product
-from BTrees.OOBTree import OOBTree
+from optimizer import choose_join_strategy, extract_join_keys, sort_merge_join
+
 class Executor:
     """
     Executor runs queries defined by an AST on registered Table instances.
@@ -62,6 +63,34 @@ class Executor:
 
 
 
+    def _apply_order_by(self, rows: list[dict], order_exprs_node: exp.Order) -> list[dict]:
+        if not order_exprs_node:
+            return rows
+
+        for order_item in reversed(order_exprs_node.expressions):  # exp.Ordered list
+            expr = order_item.this
+            is_desc = order_item.args.get("desc", False) is True
+
+            if isinstance(expr, exp.Column):
+                col_name = expr.output_name
+                table_prefix = expr.table
+                key = f"{table_prefix}.{col_name}" if table_prefix else col_name
+
+                def key_func(row):
+                    if key in row:
+                        return row[key]
+                    for k in row:
+                        if k.endswith(f".{col_name}"):
+                            return row[k]
+                    # fallback value to not crash sort
+                    return float("-inf") if is_desc else float("inf")
+
+                rows.sort(key=key_func, reverse=is_desc)
+
+        return rows
+
+
+
 
 
 
@@ -82,10 +111,14 @@ class Executor:
             col_expr = condition.this
             if isinstance(col_expr, exp.Column):
                 col_name = col_expr.output_name
-                table_prefix = col_expr.table
-                key = f"{table_prefix}.{col_name}" if table_prefix else col_name
+                key = col_expr.table + "." + col_name if col_expr.table else col_name
+            elif isinstance(col_expr, exp.Func):  # or exp.Sum / exp.Count etc.
+                func_name = col_expr.sql_name().lower()
+                col_name = col_expr.this.name
+                key = f"{func_name}({col_name})"
             else:
                 key = col_expr.name
+
 
             # Get the right-hand value
             val = condition.expression.this
@@ -94,7 +127,12 @@ class Executor:
             except:
                 val = str(val)
 
-            row_val = row.get(key)
+            if key in row:
+                row_val = row[key]
+            else:
+                # fallback: support suffix and unqualified aggregate keys
+                row_val = next((v for k, v in row.items() if k.endswith(f".{key}") or key.lower() in k.lower()), None)
+
 
             if isinstance(condition, exp.EQ): return row_val == val
             if isinstance(condition, exp.NEQ): return row_val != val
@@ -104,6 +142,180 @@ class Executor:
             if isinstance(condition, exp.LTE): return row_val <= val
 
         raise NotImplementedError(f"Unsupported condition type: {type(condition)}")
+
+
+
+
+
+
+
+
+
+    def _apply_group_by(self, rows: list[dict], group_exprs: list[exp.Expression]) -> dict:
+        """
+        Group rows by column(s) specified in GROUP BY.
+
+        Returns:
+            dict[str, list[dict]]: key = group string, value = list of rows in that group
+        """
+        if not group_exprs:
+            return {"__ALL__": rows}  # no grouping specified
+
+        grouped = {}
+
+        for row in rows:
+            keys = []
+            for expr in group_exprs:
+                if isinstance(expr, exp.Column):
+                    col_name = expr.output_name
+                    table_prefix = expr.table
+                    key = f"{table_prefix}.{col_name}" if table_prefix else col_name
+
+                    if key in row:
+                        val = row[key]
+                    else:
+                        val = next((v for k, v in row.items() if k.endswith(f".{col_name}")), None)
+
+                    keys.append(str(val))
+
+            group_key = "|".join(keys)
+            grouped.setdefault(group_key, []).append(row)
+
+        return grouped
+
+
+
+
+
+
+
+
+
+    def _apply_aggregations(grouped_rows: dict[str, list[dict]], expressions: list[exp.Expression]) -> list[dict]:
+        """
+        Given grouped rows and SELECT expressions, apply aggregation functions per group.
+
+        Parameters:
+            grouped_rows: dict of group_key -> list of row dicts
+            expressions: SELECT clause expressions
+
+        Returns:
+            list[dict]: one row per group with computed aggregates
+        """
+        results = []
+
+        for group_key, rows in grouped_rows.items():
+            result_row = {}
+
+            for expr in expressions:
+                alias = expr.alias if isinstance(expr, exp.Alias) else None
+
+                # Find aggregate function
+                agg = expr.this if isinstance(expr, exp.Alias) else expr
+
+                if isinstance(agg, exp.Func):
+                    func_name = agg.sql_name().upper()
+
+
+                    if func_name == "COUNT":
+                        val = len(rows)
+                        col_name = alias or "count"
+
+                    elif func_name == "SUM":
+                        col_expr = agg.this
+                        col_name_raw = col_expr.name
+                        val = sum(row.get(k, 0) for row in rows for k in row if k.endswith(f".{col_name_raw}"))
+                        col_name = alias or f"sum({col_name_raw})"
+
+                    elif func_name == "MAX":
+                        col_expr = agg.this
+                        col_name_raw = col_expr.name
+                        val = max((row[k] for row in rows for k in row if k.endswith(f".{col_name_raw}")), default=None)
+                        col_name = alias or f"max({col_name_raw})"
+
+                    elif func_name == "MIN":
+                        col_expr = agg.this
+                        col_name_raw = col_expr.name
+                        val = min((row[k] for row in rows for k in row if k.endswith(f".{col_name_raw}")), default=None)
+                        col_name = alias or f"min({col_name_raw})"
+
+                    else:
+                        raise NotImplementedError(f"Unsupported aggregation function: {func_name}")
+
+                    result_row[col_name] = val
+
+                elif isinstance(agg, exp.Column):
+                    # Grouping key (non-aggregated)
+                    col_name = agg.output_name
+                    for k in rows[0]:
+                        if k.endswith(f".{col_name}"):
+                            result_row[alias or col_name] = rows[0][k]
+                            break
+
+            results.append(result_row)
+
+        return results
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def _apply_limit(self, rows: list[dict], limit_expr: exp.Limit) -> list[dict]:
+        """
+        Apply LIMIT clause to result set.
+        """
+        if not limit_expr:
+            return rows
+
+        try:
+            limit_value = int(limit_expr.expression.name or limit_expr.expression.this)
+            return rows[:limit_value]
+        except Exception as e:
+            raise ValueError(f"Invalid LIMIT value: {limit_expr}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def _apply_distinct(self, rows: list[dict], distinct_flag: Any) -> list[dict]:
+        """
+        Apply DISTINCT to remove duplicate rows.
+        """
+        if not distinct_flag:
+            return rows
+
+        seen = set()
+        unique_result = []
+        for row in rows:
+            key = tuple(sorted(row.items()))
+            if key not in seen:
+                seen.add(key)
+                unique_result.append(row)
+
+        return unique_result
+
+
+
+
+
+
 
 
 
@@ -180,11 +392,6 @@ class Executor:
         table = Table(table_name, columns, primary_key=primary_keys[0])
         self.schema.create_table(table)
 
-
-
-
-
-
         for fk in foreign_keys:
             self.schema.referenced_by.setdefault(fk.ref_table, []).append((table_name, fk))
 
@@ -247,112 +454,6 @@ class Executor:
         deleted_count = original_count - len(table.rows)
         self.schema.save()
         print(f"🗑️ Deleted {deleted_count} row(s) from '{table_name}'.")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    def _execute_select(self, ast: exp.Select):
-        from_clause = ast.args.get("from")
-
-        from_exprs = []
-        if isinstance(from_clause, exp.From):
-            if isinstance(from_clause.this, exp.Table):
-                # single table case
-                from_exprs = [from_clause.this]
-            elif hasattr(from_clause, "expressions") and from_clause.expressions:
-                # multiple tables
-                from_exprs = from_clause.expressions
-            else:
-                raise ValueError("Invalid FROM clause structure")
-        else:
-            raise ValueError("Missing FROM clause")
-
-        table_objs = []
-        alias_map = {}
-
-        for table_expr in from_exprs:
-            if isinstance(table_expr, exp.Table):
-                # ✅ precisely correct extraction:
-                table_name = table_expr.this.this
-                alias = table_expr.alias_or_name
-            else:
-                raise ValueError(f"Unsupported FROM clause expression: {type(table_expr)}")
-
-            if table_name not in self.schema.tables:
-                raise ValueError(f"Table '{table_name}' not found.")
-
-            alias_map[alias] = table_name
-            table_objs.append((alias, self.schema.tables[table_name]))
-
-        row_sets = [table.select_all() for _, table in table_objs]
-        all_combinations = list(product(*row_sets))
-
-
-        prefix_keys = len(table_objs) > 1 or any(alias != table.name for alias, table in table_objs)
-
-        combined_rows = []
-        for combo in all_combinations:
-            merged = {}
-            for (alias, _), row in zip(table_objs, combo):
-                for k, v in row.items():
-                    key = f"{alias}.{k}" if prefix_keys else k
-                    merged[key] = v
-            combined_rows.append(merged)
-
-        # WHERE clause
-        where_expr = ast.args.get("where")
-        if where_expr:
-            combined_rows = [row for row in combined_rows if self._evaluate_condition(row, where_expr.this)]
-
-        # SELECT projection
-        expressions = ast.args["expressions"]
-        result = []
-
-        if len(expressions) == 1 and isinstance(expressions[0], exp.Star):
-            result = combined_rows
-        else:
-            for row in combined_rows:
-                projected = {}
-                for expr in expressions:
-                    alias = expr.alias if isinstance(expr, exp.Alias) else None
-                    col = expr.find(exp.Column)
-
-                    if not col:
-                        raise ValueError(f"Could not resolve column in SELECT: {expr}")
-
-                    col_name = col.output_name
-                    table_prefix = col.table
-                    key = f"{table_prefix}.{col_name}" if table_prefix or prefix_keys else col_name
-                    output_key = alias or key
-                    projected[output_key] = row.get(key, None)
-
-                result.append(projected)
-
-        return result
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -574,81 +675,110 @@ class Executor:
             else:
                 raise ValueError(f"Unsupported JOIN expression: {type(join_table_expr)}")
 
-        # Get rows
         row_sets = [table.select_all() for _, table in table_objs]
+        if len(table_objs) > 2:
+            print("❌ Error: SELECT queries with more than 2 tables are not supported yet.")
+            return []
 
-        # Cartesian product
-        raw_combinations = list(product(*row_sets))
+        if len(table_objs) == 2 and join_exprs:
+            _, left_table = table_objs[0]
+            _, right_table = table_objs[1]
+            left_rows = left_table.select_all()
+            right_rows = right_table.select_all()
 
-        # Apply JOIN ON conditions
-        on_conditions = [join.args.get("on") for join in join_exprs]
-        filtered_combinations = []
+            on_condition = join_exprs[0].args.get("on")
+            if not on_condition:
+                raise ValueError("JOIN missing ON condition")
 
+            strategy = choose_join_strategy(left_rows, right_rows, on_condition)
+
+            if strategy == "sort_merge":
+                left_key, right_key = extract_join_keys(on_condition)
+                raw_combinations = sort_merge_join(left_rows, right_rows, left_key, right_key)
+            else:
+                from itertools import product
+                raw_combinations = list(product(left_rows, right_rows))
+                left_key, right_key = extract_join_keys(on_condition)
+                raw_combinations = [
+                    (l, r) for l, r in raw_combinations
+                    if l[left_key] == r[right_key]
+                ]
+        else:
+            from itertools import product
+            raw_combinations = list(product(*row_sets))
+
+        combined_rows = []
         for combo in raw_combinations:
             merged = {}
             for (alias, _), row in zip(table_objs, combo):
                 for k, v in row.items():
                     merged[f"{alias}.{k}"] = v
-
-            passed = True
-            for condition in on_conditions:
-                if condition and not self._evaluate_condition(merged, condition):
-                    passed = False
-                    break
-
-            if passed:
-                filtered_combinations.append(combo)
-
-        all_combinations = filtered_combinations
-
-        prefix_keys = len(table_objs) > 1 or any(alias != table.name for alias, table in table_objs)
-
-        combined_rows = []
-        for combo in all_combinations:
-            merged = {}
-            for (alias, _), row in zip(table_objs, combo):
-                for k, v in row.items():
-                    key = f"{alias}.{k}" if prefix_keys else k
-                    merged[key] = v
             combined_rows.append(merged)
 
-        # WHERE clause
         where_expr = ast.args.get("where")
         if where_expr:
             combined_rows = [row for row in combined_rows if self._evaluate_condition(row, where_expr.this)]
 
-        # SELECT projection
-        expressions = ast.args["expressions"]
-        result = []
+        combined_rows = self._apply_order_by(combined_rows, ast.args.get("order"))
 
-        if len(expressions) == 1 and isinstance(expressions[0], exp.Star):
-            result = combined_rows
+        expressions = ast.args.get("expressions", [])
+        if not expressions:
+            raise ValueError("No expressions in SELECT clause.")
+
+        group_exprs = ast.args.get("group")
+        if group_exprs:
+            grouped = self._apply_group_by(combined_rows, group_exprs)
+            result = Executor._apply_aggregations(grouped, expressions)
+
+            # ✅ HAVING clause filtering
+            having_expr = ast.args.get("having")
+            if having_expr:
+                result = [row for row in result if self._evaluate_condition(row, having_expr.this)]
+
         else:
-            for row in combined_rows:
-                projected = {}
-                for expr in expressions:
-                    if isinstance(expr, exp.Column) and isinstance(expr.this, exp.Star):
-                        table_prefix = expr.table
-                        for k, v in row.items():
-                            if k.startswith(f"{table_prefix}."):
-                                projected[k] = v
-                        continue
+            result = []
+            if len(expressions) == 1 and isinstance(expressions[0], exp.Star):
+                result = combined_rows
+            else:
+                for row in combined_rows:
+                    projected = {}
+                    for expr in expressions:
+                        if isinstance(expr, exp.Column) and isinstance(expr.this, exp.Star):
+                            table_prefix = expr.table
+                            for k, v in row.items():
+                                if k.startswith(f"{table_prefix}."):
+                                    projected[k] = v
+                            continue
 
-                    alias = expr.alias if isinstance(expr, exp.Alias) else None
-                    col = expr.find(exp.Column)
+                        alias = expr.alias if isinstance(expr, exp.Alias) else None
+                        col = expr.find(exp.Column)
+                        if not col:
+                            raise ValueError(f"Could not resolve column in SELECT: {expr}")
 
-                    if not col:
-                        raise ValueError(f"Could not resolve column in SELECT: {expr}")
+                        col_name = col.output_name
+                        table_prefix = col.table
+                        key = f"{table_prefix}.{col_name}" if table_prefix else None
 
-                    col_name = col.output_name
-                    table_prefix = col.table
-                    key = f"{table_prefix}.{col_name}" if table_prefix or prefix_keys else col_name
-                    output_key = alias or key
-                    projected[output_key] = row.get(key, None)
+                        val = None
+                        if key and key in row:
+                            val = row[key]
+                        else:
+                            for k in row:
+                                if k.endswith(f".{col_name}"):
+                                    val = row[k]
+                                    break
 
-                result.append(projected)
+                        output_key = alias or col_name
+                        projected[output_key] = val
 
+                    result.append(projected)
+
+        result = self._apply_distinct(result, ast.args.get("distinct"))
+        result = self._apply_limit(result, ast.args.get("limit"))
         return result
+
+
+
 
 
 
