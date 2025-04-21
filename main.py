@@ -80,6 +80,10 @@ def main():
                     start_time = time.time()
 
                     ast = parser.parse(buffer)
+                    print("🔍 ast.args:")
+                    for key, val in ast.args.items():
+                        print(f"  {key}: {val}")
+
                     result = executor.execute(ast)
 
                     end_time = time.time()
