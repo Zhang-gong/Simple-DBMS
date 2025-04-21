@@ -1,6 +1,7 @@
 import os
 import json
 import csv
+import pickle
 from BTrees.OOBTree import OOBTree
 
 class ForeignKey:
@@ -17,7 +18,11 @@ class Table:
         self.primary_key = primary_key
         self.column_names = [col["name"] for col in columns]
         self.rows = []  # List of row dicts
-        self.indexes = {}  # Column -> BTree index
+        self.indexes = {col: None for col in self.column_names}  # Column -> BTree index
+        self._init_primary_key_index()
+
+    def _init_primary_key_index(self):
+        self.indexes[self.primary_key] = OOBTree()
 
         # Optional: create BTree index for primary key
         # self.indexes[primary_key] = OOBTree()
@@ -27,14 +32,6 @@ class Table:
             raise ValueError("Column mismatch")
 
         self._validate_row_types(row)
-        # #check foreign keys
-        # for fk in self.foreign_keys:
-        #     ref_table = self.schema.get_table(fk.ref_table)
-        #     ref_values = [r[fk.ref_col] for r in ref_table.select_all()]
-        #     if row[fk.local_col] not in ref_values:
-        #         raise ValueError(
-        #             f"Foreign key constraint failed: {row[fk.local_col]} not found in {fk.ref_table}.{fk.ref_col}"
-        #         )
 
         pk = row[self.primary_key]
 
@@ -46,11 +43,15 @@ class Table:
             if pk in self.indexes[self.primary_key]:
                 raise ValueError(f"Duplicate primary key: {pk}")
 
+        row_id = len(self.rows)
+        # print(f"before:",dict(self.indexes[self.primary_key]))
         self.rows.append(row)
+
         # Update the index for the primary key
         for col, index in self.indexes.items():
-            index[row[col]] = row
-
+            if index is not None:
+                index[row[col]] = row_id
+        # print(f"after:",dict(self.indexes[self.primary_key]))
     def _validate_row_types(self, row: dict):
         for col in self.columns:
             name = col["name"]
@@ -106,6 +107,10 @@ class Table:
             writer = csv.DictWriter(f, fieldnames=self.column_names)
             writer.writeheader()
             writer.writerows(self.rows)
+        # Save indexes
+        file_path = os.path.join(directory, f"{self.name}_index.pkl")
+        with open(file_path, "wb") as f:
+            pickle.dump(self.indexes, f)
 
 
 
@@ -138,5 +143,23 @@ class Table:
                         if col_type == "INT" and row[col_name] != "":
                             row[col_name] = int(row[col_name])
                     table.rows.append(row)
+        # Load indexes
+        file_path = os.path.join(directory, f"{table.name}_index.pkl")
+        if os.path.exists(file_path):
+            with open(file_path, "rb") as f:
+                table.indexes = pickle.load(f)
 
         return table
+
+    def rebuild_indexes(self):
+        """
+        Rebuild all non-null indexes from scratch based on current rows.
+        This ensures index structures remain consistent after deletions or row reordering.
+        """
+        for col, index in self.indexes.items():
+            if index is not None:
+                index.clear()  # Clear existing index structure
+                for row_id, row in enumerate(self.rows):
+                    value = row[col]
+                    index[value] = row_id  # Rebuild index using current row_id
+

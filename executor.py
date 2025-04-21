@@ -5,7 +5,7 @@ from sqlglot.expressions import Expression, Column, EQ, Literal, Where
 from typing import List, Dict, Any
 from catalog.table import Table, ForeignKey  # import your Table class
 from itertools import product
-
+from BTrees.OOBTree import OOBTree
 class Executor:
     """
     Executor runs queries defined by an AST on registered Table instances.
@@ -29,7 +29,12 @@ class Executor:
         """
 
         if isinstance(ast, exp.Create):
-            self._execute_create(ast)
+            if isinstance(ast.this, exp.Index):
+                return self._execute_build_index(ast)
+            elif isinstance(ast.this.this, exp.Table):
+                self._execute_create(ast)
+            else:
+                raise ValueError(f"Unsupported CREATE statement: {ast}")
         elif isinstance(ast, exp.Select):
             return self._execute_select(ast)
         elif isinstance(ast, exp.Insert):
@@ -175,6 +180,11 @@ class Executor:
         table = Table(table_name, columns, primary_key=primary_keys[0])
         self.schema.create_table(table)
 
+
+
+
+
+
         for fk in foreign_keys:
             self.schema.referenced_by.setdefault(fk.ref_table, []).append((table_name, fk))
 
@@ -201,16 +211,39 @@ class Executor:
 
         table = self.schema.get_table(table_name)
         original_count = len(table.rows)
-
+        print(f"before delete:", dict(table.indexes[table.primary_key]))
         where_expr = ast.args.get("where")
         if where_expr:
             matching_rows = self._apply_where_clause(table.rows, where_expr) #delete matching_rows
+
+            row_ids_to_delete = [
+                i for i, row in enumerate(table.rows) if row in matching_rows
+            ]
+
+            # Check foreign key constraints for the rows to be deleted
             for row in matching_rows:
                 self.check_foreign_key_constraints_delete(table_name, row)
+
+            for row_id in row_ids_to_delete:
+                row = table.rows[row_id]
+                for col, index in table.indexes.items():
+                    if index is not None:
+                        val = row[col]
+                        # 若该值正好是这个 row_id，则删除（假设唯一索引）
+                        if index.get(val) == row_id:
+                            del index[val]
+
             table.rows = [row for row in table.rows if row not in matching_rows]
         else:
+            for col, index in table.indexes.items():
+                if index is not None:
+                    index.clear()
             table.rows.clear()
 
+        print(f"after delete:", dict(table.indexes[table.primary_key]))
+
+        table.rebuild_indexes()
+        print(f"after rebuild:", dict(table.indexes[table.primary_key]))
         deleted_count = original_count - len(table.rows)
         self.schema.save()
         print(f"🗑️ Deleted {deleted_count} row(s) from '{table_name}'.")
@@ -689,3 +722,27 @@ class Executor:
                         # 你也可以在真正的 delete 逻辑里执行：
                         # referencing_table.delete(lambda r: r[local_col] == pk_val)
                         continue
+
+
+    def _execute_build_index(self, ast):
+        """
+        BUILD INDEX ON table(column)
+        """
+        table_name = ast.this.args['table'].name  # e.g. students
+        column_name = ast.args['this'].args['params'].args['columns'][0].args['this'].name # e.g. age
+
+        table = self.schema.get_table(table_name)
+
+        if column_name not in table.column_names:
+            raise ValueError(f"Column '{column_name}' does not exist in table '{table_name}'")
+
+        if table.indexes[column_name] is None:
+            # ✅ Build new index
+            table.indexes[column_name] = OOBTree()
+            print(f"⚙️  Created new index on {table_name}.{column_name}")
+            print(f"after create index:", dict(table.indexes[table.primary_key]))
+        else:
+            print(f"🔄 Rebuilding existing index on {table_name}.{column_name}")
+
+        # ✅ 建好新 index 或已有 index 后，都重建内容
+        table.rebuild_indexes()

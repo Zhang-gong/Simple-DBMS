@@ -93,6 +93,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+#create table students (id INT PRIMARY KEY, name TEXT, age INT);
 #INSERT INTO students (id, name,age) VALUES (1, 'Alice', 24);
 #CREATE TABLE order (oder_id INT PRIMARY KEY, price INT, student_id INT,FOREIGN KEY (student_id) REFERENCES students(id),age INT,FOREIGN KEY (age) REFERENCES students(age));
 #CREATE TABLE order (oder_id INT PRIMARY KEY, price INT, student_id INT,FOREIGN KEY (student_id) REFERENCES students(id),amount INT);
@@ -108,3 +110,16 @@ if __name__ == "__main__":
 ## check primary key and foreign key constraint in update
 #UPDATE "order" SET student_id = 3 WHERE student_id = 1;
 #UPDATE students SET id = 25 WHERE id = 1;
+
+#CREATE TABLE teacher (teacher_id INT PRIMARY KEY, name TEXT, age INT);
+#INSERT INTO teacher (teacher_id, name, age) VALUES (1, 'Bob', 30);
+#INSERT INTO teacher (teacher_id, name, age) VALUES (2, 'Charlie', 35);
+#INSERT INTO teacher (teacher_id, name, age) VALUES (3, 'David', 40);
+#INSERT INTO teacher (teacher_id, name, age) VALUES (4, 'Eve', 28);
+#INSERT INTO teacher (teacher_id, name, age) VALUES (5, 'Frank', 45);
+#DELETE FROM teacher WHERE teacher_id = 5;
+
+#DELETE FROM teacher WHERE teacher_id = 4;
+#DELETE FROM teacher WHERE teacher_id = 1;
+
+#CREATE INDEX idx_age ON teacher(age);

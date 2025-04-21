@@ -35,6 +35,8 @@ class Schema:
             elif ref_list.policy.upper() == "CASCADE":
                 for child_table_name, fk in ref_list:
                     self.drop_table(child_table_name, policy="CASCADE")
+        # Remove local file (including foreign key references and indexes)
+
 
     def save(self):
         # Create schema directory

@@ -42,3 +42,10 @@
 - [ ] Type checking (integer vs string)
 - [ ] Index-aware scan simulation
 - [ ] Add error handling for invalid queries
+
+
+
+- [ ] 2 table 
+- [ ] primary key (2 columns)
+- [ ] Conjunctive and disjunctive condition ordering
+- [ ] optimizer
