@@ -100,6 +100,8 @@ if __name__ == "__main__":
 #CREATE TABLE order (oder_id INT PRIMARY KEY, price INT, student_id INT,FOREIGN KEY (student_id) REFERENCES students(id),amount INT);
 #INSERT INTO order (oder_id, price, student_id, amount) VALUES (1, 20, 1, 5);
 #INSERT INTO order (oder_id, price, student_id,amount) VALUES (2, 30, 1, 10);
+#DROP TABLE order;
+#drop table students;
 
 #INSERT INTO order (oder_id, price, student_id) VALUES ('OID1001', 299.99, 12345);
 #Error: invalid literal for int() with base 10: 'OID1001'
@@ -123,3 +125,4 @@ if __name__ == "__main__":
 #DELETE FROM teacher WHERE teacher_id = 1;
 
 #CREATE INDEX idx_age ON teacher(age);
+

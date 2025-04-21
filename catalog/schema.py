@@ -23,20 +23,40 @@ class Schema:
     def get_table(self, table_name: str) -> Table:
         return self.tables.get(table_name)
 
-    def drop_table(self, table_name: str):
+    def drop_table(self, table_name: str, policy: str = "RESTRICT"):
         if table_name not in self.tables:
             raise ValueError(f"Table '{table_name}' not found in schema '{self.name}'")
-        del self.tables[table_name]
+
+        # ✅ 检查是否被其他表引用
         if table_name in self.referenced_by:
             ref_list = self.referenced_by[table_name]
-            if ref_list.policy.upper() == "RESTRICT":
+
+            # ✅ 策略检查：是否有任意 foreign key 是 RESTRICT
+            has_restrict = any(fk.policy == "RESTRICT" for _, fk in ref_list)
+
+            if has_restrict and policy.upper() != "CASCADE":
                 ref_names = [tbl for tbl, _ in ref_list]
-                raise ValueError(f"Cannot drop table '{table_name}': referenced by {ref_names}")
-            elif ref_list.policy.upper() == "CASCADE":
+                raise ValueError(f"❌ Cannot drop table '{table_name}': referenced by {ref_names} with RESTRICT policy")
+
+            # ✅ 如果设置为 CASCADE，递归删除所有引用它的子表
+            if policy.upper() == "CASCADE":
                 for child_table_name, fk in ref_list:
                     self.drop_table(child_table_name, policy="CASCADE")
-        # Remove local file (including foreign key references and indexes)
+            del self.referenced_by[table_name]
 
+        for ref_table_name in list(self.referenced_by.keys()):
+            updated_refs = [
+                (t, fk) for (t, fk) in self.referenced_by[ref_table_name]
+                if t != table_name  # ❗️删除当前表对别人的引用
+            ]
+            if updated_refs:
+                self.referenced_by[ref_table_name] = updated_refs
+            else:
+                del self.referenced_by[ref_table_name]  # 清理空列表
+
+            # ✅ 3. 删除表本身
+        del self.tables[table_name]
+        print(self.referenced_by)
 
     def save(self):
         # Create schema directory
