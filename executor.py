@@ -260,6 +260,66 @@ class Executor:
 
 
 
+
+
+
+    def _apply_limit(self, rows: list[dict], limit_expr: exp.Limit) -> list[dict]:
+        """
+        Apply LIMIT clause to result set.
+        """
+        if not limit_expr:
+            return rows
+
+        try:
+            limit_value = int(limit_expr.expression.name or limit_expr.expression.this)
+            return rows[:limit_value]
+        except Exception as e:
+            raise ValueError(f"Invalid LIMIT value: {limit_expr}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def _apply_distinct(self, rows: list[dict], distinct_flag: Any) -> list[dict]:
+        """
+        Apply DISTINCT to remove duplicate rows.
+        """
+        if not distinct_flag:
+            return rows
+
+        seen = set()
+        unique_result = []
+        for row in rows:
+            key = tuple(sorted(row.items()))
+            if key not in seen:
+                seen.add(key)
+                unique_result.append(row)
+
+        return unique_result
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     def _execute_create(self, ast: exp.Create):
         """
         Execute a CREATE TABLE statement with primary key and type support.
@@ -590,8 +650,8 @@ class Executor:
             return []
 
         if len(table_objs) == 2 and join_exprs:
-            left_alias, left_table = table_objs[0]
-            right_alias, right_table = table_objs[1]
+            _, left_table = table_objs[0]
+            _, right_table = table_objs[1]
             left_rows = left_table.select_all()
             right_rows = right_table.select_all()
 
@@ -681,7 +741,9 @@ class Executor:
                         projected[output_key] = val
 
                     result.append(projected)
-
+                    
+        result = self._apply_distinct(result, ast.args.get("distinct"))
+        result = self._apply_limit(result, ast.args.get("limit"))
         return result
 
 
