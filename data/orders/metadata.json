@@ -1,0 +1,18 @@
+{
+    "name": "orders",
+    "columns": [
+        {
+            "name": "order_id",
+            "type": "INT"
+        },
+        {
+            "name": "student_id",
+            "type": "INT"
+        },
+        {
+            "name": "amount",
+            "type": "INT"
+        }
+    ],
+    "primary_key": "order_id"
+}

@@ -1,0 +1,18 @@
+{
+    "name": "enrollments",
+    "columns": [
+        {
+            "name": "enrollment_id",
+            "type": "INT"
+        },
+        {
+            "name": "student_id",
+            "type": "INT"
+        },
+        {
+            "name": "course",
+            "type": "TEXT"
+        }
+    ],
+    "primary_key": "enrollment_id"
+}

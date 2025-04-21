@@ -5,6 +5,7 @@ from sqlglot.expressions import Expression, Column, EQ, Literal, Where
 from typing import List, Dict, Any
 from catalog.table import Table, ForeignKey  # import your Table class
 from itertools import product
+from optimizer import choose_join_strategy, extract_join_keys, sort_merge_join
 
 class Executor:
     """
@@ -57,6 +58,34 @@ class Executor:
 
 
 
+    def _apply_order_by(self, rows: list[dict], order_exprs_node: exp.Order) -> list[dict]:
+        if not order_exprs_node:
+            return rows
+
+        for order_item in reversed(order_exprs_node.expressions):  # exp.Ordered list
+            expr = order_item.this
+            is_desc = order_item.args.get("desc", False) is True
+
+            if isinstance(expr, exp.Column):
+                col_name = expr.output_name
+                table_prefix = expr.table
+                key = f"{table_prefix}.{col_name}" if table_prefix else col_name
+
+                def key_func(row):
+                    if key in row:
+                        return row[key]
+                    for k in row:
+                        if k.endswith(f".{col_name}"):
+                            return row[k]
+                    # fallback value to not crash sort
+                    return float("-inf") if is_desc else float("inf")
+
+                rows.sort(key=key_func, reverse=is_desc)
+
+        return rows
+
+
+
 
 
 
@@ -89,7 +118,11 @@ class Executor:
             except:
                 val = str(val)
 
-            row_val = row.get(key)
+            if key in row:
+                row_val = row[key]
+            else:
+                # fallback: search by suffix
+                row_val = next((v for k, v in row.items() if k.endswith(f".{key}")), None)
 
             if isinstance(condition, exp.EQ): return row_val == val
             if isinstance(condition, exp.NEQ): return row_val != val
@@ -214,112 +247,6 @@ class Executor:
         deleted_count = original_count - len(table.rows)
         self.schema.save()
         print(f"🗑️ Deleted {deleted_count} row(s) from '{table_name}'.")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    def _execute_select(self, ast: exp.Select):
-        from_clause = ast.args.get("from")
-
-        from_exprs = []
-        if isinstance(from_clause, exp.From):
-            if isinstance(from_clause.this, exp.Table):
-                # single table case
-                from_exprs = [from_clause.this]
-            elif hasattr(from_clause, "expressions") and from_clause.expressions:
-                # multiple tables
-                from_exprs = from_clause.expressions
-            else:
-                raise ValueError("Invalid FROM clause structure")
-        else:
-            raise ValueError("Missing FROM clause")
-
-        table_objs = []
-        alias_map = {}
-
-        for table_expr in from_exprs:
-            if isinstance(table_expr, exp.Table):
-                # ✅ precisely correct extraction:
-                table_name = table_expr.this.this
-                alias = table_expr.alias_or_name
-            else:
-                raise ValueError(f"Unsupported FROM clause expression: {type(table_expr)}")
-
-            if table_name not in self.schema.tables:
-                raise ValueError(f"Table '{table_name}' not found.")
-
-            alias_map[alias] = table_name
-            table_objs.append((alias, self.schema.tables[table_name]))
-
-        row_sets = [table.select_all() for _, table in table_objs]
-        all_combinations = list(product(*row_sets))
-
-
-        prefix_keys = len(table_objs) > 1 or any(alias != table.name for alias, table in table_objs)
-
-        combined_rows = []
-        for combo in all_combinations:
-            merged = {}
-            for (alias, _), row in zip(table_objs, combo):
-                for k, v in row.items():
-                    key = f"{alias}.{k}" if prefix_keys else k
-                    merged[key] = v
-            combined_rows.append(merged)
-
-        # WHERE clause
-        where_expr = ast.args.get("where")
-        if where_expr:
-            combined_rows = [row for row in combined_rows if self._evaluate_condition(row, where_expr.this)]
-
-        # SELECT projection
-        expressions = ast.args["expressions"]
-        result = []
-
-        if len(expressions) == 1 and isinstance(expressions[0], exp.Star):
-            result = combined_rows
-        else:
-            for row in combined_rows:
-                projected = {}
-                for expr in expressions:
-                    alias = expr.alias if isinstance(expr, exp.Alias) else None
-                    col = expr.find(exp.Column)
-
-                    if not col:
-                        raise ValueError(f"Could not resolve column in SELECT: {expr}")
-
-                    col_name = col.output_name
-                    table_prefix = col.table
-                    key = f"{table_prefix}.{col_name}" if table_prefix or prefix_keys else col_name
-                    output_key = alias or key
-                    projected[output_key] = row.get(key, None)
-
-                result.append(projected)
-
-        return result
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -508,14 +435,12 @@ class Executor:
 
     def _execute_select(self, ast: exp.Select):
         from_clause = ast.args.get("from")
-
         if not isinstance(from_clause, exp.From):
             raise ValueError("Missing FROM clause")
 
         table_objs = []
         alias_map = []
 
-        # First table (FROM clause)
         first_table_expr = from_clause.this
         if isinstance(first_table_expr, exp.Table):
             table_name = first_table_expr.this.this
@@ -527,7 +452,6 @@ class Executor:
         else:
             raise ValueError(f"Unsupported FROM expression: {type(first_table_expr)}")
 
-        # JOINed tables
         join_exprs = ast.args.get("joins", [])
         for join in join_exprs:
             join_table_expr = join.this
@@ -541,53 +465,58 @@ class Executor:
             else:
                 raise ValueError(f"Unsupported JOIN expression: {type(join_table_expr)}")
 
-        # Get rows
         row_sets = [table.select_all() for _, table in table_objs]
+        if len(table_objs) > 2:
+            print("❌ Error: SELECT queries with more than 2 tables are not supported yet.")
+            return []
 
-        # Cartesian product
-        raw_combinations = list(product(*row_sets))
+        if len(table_objs) == 2 and join_exprs:
+            left_alias, left_table = table_objs[0]
+            right_alias, right_table = table_objs[1]
+            left_rows = left_table.select_all()
+            right_rows = right_table.select_all()
 
-        # Apply JOIN ON conditions
-        on_conditions = [join.args.get("on") for join in join_exprs]
-        filtered_combinations = []
+            on_condition = join_exprs[0].args.get("on")
+            if not on_condition:
+                raise ValueError("JOIN missing ON condition")
 
+            strategy = choose_join_strategy(left_rows, right_rows, on_condition)
+
+            if strategy == "sort_merge":
+                left_key, right_key = extract_join_keys(on_condition)
+                raw_combinations = sort_merge_join(left_rows, right_rows, left_key, right_key)
+            else:
+                from itertools import product
+                raw_combinations = list(product(left_rows, right_rows))
+                left_key, right_key = extract_join_keys(on_condition)
+                raw_combinations = [
+                    (l, r) for l, r in raw_combinations
+                    if l[left_key] == r[right_key]
+                ]
+        else:
+            from itertools import product
+            raw_combinations = list(product(*row_sets))
+
+        combined_rows = []
         for combo in raw_combinations:
             merged = {}
             for (alias, _), row in zip(table_objs, combo):
                 for k, v in row.items():
                     merged[f"{alias}.{k}"] = v
-
-            passed = True
-            for condition in on_conditions:
-                if condition and not self._evaluate_condition(merged, condition):
-                    passed = False
-                    break
-
-            if passed:
-                filtered_combinations.append(combo)
-
-        all_combinations = filtered_combinations
-
-        prefix_keys = len(table_objs) > 1 or any(alias != table.name for alias, table in table_objs)
-
-        combined_rows = []
-        for combo in all_combinations:
-            merged = {}
-            for (alias, _), row in zip(table_objs, combo):
-                for k, v in row.items():
-                    key = f"{alias}.{k}" if prefix_keys else k
-                    merged[key] = v
             combined_rows.append(merged)
 
-        # WHERE clause
         where_expr = ast.args.get("where")
         if where_expr:
             combined_rows = [row for row in combined_rows if self._evaluate_condition(row, where_expr.this)]
 
-        # SELECT projection
-        expressions = ast.args["expressions"]
-        result = []
+        # ✅ ORDER BY must run before projection
+        combined_rows = self._apply_order_by(combined_rows, ast.args.get("order"))
 
+        expressions = ast.args.get("expressions", [])
+        if not expressions:
+            raise ValueError("No expressions in SELECT clause.")
+
+        result = []
         if len(expressions) == 1 and isinstance(expressions[0], exp.Star):
             result = combined_rows
         else:
@@ -603,19 +532,31 @@ class Executor:
 
                     alias = expr.alias if isinstance(expr, exp.Alias) else None
                     col = expr.find(exp.Column)
-
                     if not col:
                         raise ValueError(f"Could not resolve column in SELECT: {expr}")
 
                     col_name = col.output_name
                     table_prefix = col.table
-                    key = f"{table_prefix}.{col_name}" if table_prefix or prefix_keys else col_name
-                    output_key = alias or key
-                    projected[output_key] = row.get(key, None)
+                    key = f"{table_prefix}.{col_name}" if table_prefix else None
+
+                    # Lookup value
+                    val = None
+                    if key and key in row:
+                        val = row[key]
+                    else:
+                        for k in row:
+                            if k.endswith(f".{col_name}"):
+                                val = row[k]
+                                break
+
+                    output_key = alias or col_name
+                    projected[output_key] = val
 
                 result.append(projected)
 
         return result
+
+
 
 
 

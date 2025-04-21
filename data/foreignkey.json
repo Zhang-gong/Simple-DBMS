@@ -1,0 +1,27 @@
+{
+  "students": [
+    {
+      "table": "enrollments",
+      "columns": "student_id",
+      "ref_table": "students",
+      "ref_columns": "id",
+      "policy": "RESTRICT"
+    },
+    {
+      "table": "orders",
+      "columns": "student_id",
+      "ref_table": "students",
+      "ref_columns": "id",
+      "policy": "RESTRICT"
+    }
+  ],
+  "enrollments": [
+    {
+      "table": "grades",
+      "columns": "enrollment_id",
+      "ref_table": "enrollments",
+      "ref_columns": "enrollment_id",
+      "policy": "RESTRICT"
+    }
+  ]
+}
