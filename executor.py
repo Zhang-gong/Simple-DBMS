@@ -5,7 +5,7 @@ from sqlglot.expressions import Expression, Column, EQ, Literal, Where
 from typing import List, Dict, Any
 from catalog.table import Table, ForeignKey  # import your Table class
 from itertools import product
-from optimizer import choose_join_strategy, extract_join_keys, sort_merge_join
+import optimizer
 
 class Executor:
     """
@@ -100,6 +100,8 @@ class Executor:
         """
         Evaluate WHERE condition. Supports =, !=, <, >, <=, >=, AND, OR.
         """
+        if isinstance(condition, exp.Paren):
+            return self._evaluate_condition(row, condition.this)
         if isinstance(condition, exp.And):
             return self._evaluate_condition(row, condition.left) and self._evaluate_condition(row, condition.right)
 
@@ -690,15 +692,15 @@ class Executor:
             if not on_condition:
                 raise ValueError("JOIN missing ON condition")
 
-            strategy = choose_join_strategy(left_rows, right_rows, on_condition)
+            strategy = optimizer.choose_join_strategy(left_rows, right_rows, on_condition)
 
             if strategy == "sort_merge":
-                left_key, right_key = extract_join_keys(on_condition)
-                raw_combinations = sort_merge_join(left_rows, right_rows, left_key, right_key)
+                left_key, right_key = optimizer.extract_join_keys(on_condition)
+                raw_combinations = optimizer.sort_merge_join(left_rows, right_rows, left_key, right_key)
             else:
                 from itertools import product
                 raw_combinations = list(product(left_rows, right_rows))
-                left_key, right_key = extract_join_keys(on_condition)
+                left_key, right_key = optimizer.extract_join_keys(on_condition)
                 raw_combinations = [
                     (l, r) for l, r in raw_combinations
                     if l[left_key] == r[right_key]
@@ -716,7 +718,38 @@ class Executor:
             combined_rows.append(merged)
 
         where_expr = ast.args.get("where")
+        copy_of_expr = ast.args.get("where")
+
+
+
+
+
         if where_expr:
+            # Check if the WHERE clause is a simple equality condition and use index if available
+            if isinstance(where_expr.this, exp.EQ):
+                col_exp = where_expr.this.this
+                val_exp = where_expr.this.expression
+
+                if isinstance(col_exp, exp.Column) and isinstance(val_exp, exp.Literal):
+                    col_name = col_exp.name
+                    table_name = first_table_expr.this.this
+                    value = val_exp.name or val_exp.this
+
+                    table = self.schema.get_table(table_name)
+                    if col_name in table.indexes and table.indexes[col_name] is not None:
+                        print(f"⚡ Using index on {table_name}.{col_name} = {value}")
+                        row_id = table.indexes[col_name].get(int(value) if value.isdigit() else value)
+                        if row_id is not None:
+                            filtered_row = table.rows[row_id]
+                            combined_rows = [
+                                {f"{table_name}.{k}": v for k, v in filtered_row.items()}
+                            ]
+                        else:
+                            combined_rows = []  # No match
+
+            reordered = optimizer.reorder_conjunctive_conditions(where_expr.this)
+            print("🔍 Reordered WHERE clause:", reordered.sql())  # 打印重排后的 SQL 条件
+            where_expr.set("this", reordered)
             combined_rows = [row for row in combined_rows if self._evaluate_condition(row, where_expr.this)]
 
         combined_rows = self._apply_order_by(combined_rows, ast.args.get("order"))

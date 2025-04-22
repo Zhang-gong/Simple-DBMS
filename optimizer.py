@@ -1,4 +1,4 @@
-from sqlglot import exp
+from sqlglot import parse_one,exp
 
 def choose_join_strategy(left_rows, right_rows, condition: exp.Expression) -> str:
     """
@@ -76,3 +76,41 @@ def sort_merge_join(left_rows, right_rows, left_key: str, right_key: str) -> lis
 
     return joined
 
+
+
+def reorder_conjunctive_conditions(expression: exp.Expression):
+    if isinstance(expression, exp.And):
+        flat_conditions = flatten_and(expression)
+        sorted_conditions = sorted(flat_conditions, key=estimate_cost)
+        return rebuild_and_chain(sorted_conditions)
+    return expression
+
+def flatten_and(expression):
+    # 把 AND 树拍平成一个列表
+    conditions = []
+    def _recurse(e):
+        if isinstance(e, exp.And):
+            _recurse(e.left)
+            _recurse(e.right)
+        else:
+            conditions.append(e)
+    _recurse(expression)
+    return conditions
+
+def rebuild_and_chain(conditions):
+    # 把 list 再还原成 exp.And 链表结构
+    from functools import reduce
+    return reduce(lambda x, y: exp.and_(x, y), conditions)
+
+def estimate_cost(pred: exp.Expression):
+    sql = pred.sql().upper()
+    if "=" in sql:
+        return 1
+    elif ">" in sql or "<" in sql:
+        return 5
+    elif "LIKE '%" in sql:
+        return 50
+    elif "LENGTH" in sql or "(" in sql:
+        return 100
+    else:
+        return 20

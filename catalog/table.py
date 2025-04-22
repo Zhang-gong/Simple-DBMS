@@ -52,6 +52,8 @@ class Table:
             if index is not None:
                 index[row[col]] = row_id
         # print(f"after:",dict(self.indexes[self.primary_key]))
+
+
     def _validate_row_types(self, row: dict):
         for col in self.columns:
             name = col["name"]

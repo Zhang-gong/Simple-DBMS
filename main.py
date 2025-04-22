@@ -139,3 +139,6 @@ if __name__ == "__main__":
 
 #CREATE INDEX idx_age ON teacher(age);
 
+#select * from students where id>0 and age=22 and name='Bob';
+
+#select * from teacher where id=1;
