@@ -196,50 +196,85 @@ class Executor:
     @staticmethod
     def _apply_aggregations(grouped_rows: dict[str, list[dict]], expressions: list[exp.Expression]) -> list[dict]:
         """
-        Apply aggregation functions (COUNT, SUM, MAX, MIN) and select expressions per group.
+        Apply aggregate functions (COUNT, SUM, MIN, MAX) and select expressions per group.
+
+        Parameters:
+            grouped_rows (dict): Mapping of group keys to list of rows in each group.
+            expressions (list): SELECT clause expressions to project and/or aggregate.
 
         Returns:
-            list[dict]: One result row per group.
+            list[dict]: Aggregated results, one row per group.
         """
         results = []
+
         for group_key, rows in grouped_rows.items():
             result_row = {}
+
             for expr in expressions:
+                # Extract alias and the actual aggregate expression
                 alias = expr.alias if isinstance(expr, exp.Alias) else None
                 agg = expr.this if isinstance(expr, exp.Alias) else expr
 
+                # --- Case 1: It's an aggregate function like COUNT, SUM, etc.
                 if isinstance(agg, exp.Func):
                     func_name = agg.sql_name().upper()
-                    col_expr = agg.this
-                    raw = col_expr.name
 
-                    if func_name == "COUNT":
+                    if func_name == "COUNT" and isinstance(agg.args.get("this"), exp.Star):
                         val = len(rows)
-                        col_name = alias or "count"
-                    elif func_name == "SUM":
-                        val = sum(row[k] for row in rows for k in row if k.endswith(f".{raw}"))
-                        col_name = alias or f"sum({raw})"
-                    elif func_name == "MAX":
-                        val = max((row[k] for row in rows for k in row if k.endswith(f".{raw}")), default=None)
-                        col_name = alias or f"max({raw})"
-                    elif func_name == "MIN":
-                        val = min((row[k] for row in rows for k in row if k.endswith(f".{raw}")), default=None)
-                        col_name = alias or f"min({raw})"
+                        col_name = alias or "COUNT(*)"
+                        result_row[col_name] = val
+
                     else:
-                        raise NotImplementedError(f"Unsupported aggregation: {func_name}")
+                        # Safe handling for other aggregates
+                        col_expr = agg.args.get("this")
+                        raw = col_expr.name if hasattr(col_expr, 'name') else col_expr.this.name
 
-                    result_row[col_name] = val
+                        if func_name == "COUNT":
+                            val = sum(1 for row in rows for k in row if k == raw or k.endswith(f".{raw}"))
+                            col_name = alias or f"COUNT({raw})"
+                        elif func_name == "SUM":
+                            val = sum(row[k] for row in rows for k in row if k == raw or k.endswith(f".{raw}"))
+                            col_name = alias or f"SUM({raw})"
+                        elif func_name == "MAX":
+                            values = [row[k] for row in rows for k in row if k == raw or k.endswith(f".{raw}")]
+                            val = max(values) if values else None
+                            col_name = alias or f"MAX({raw})"
+                        elif func_name == "MIN":
+                            values = [row[k] for row in rows for k in row if k == raw or k.endswith(f".{raw}")]
+                            val = min(values) if values else None
+                            col_name = alias or f"MIN({raw})"
+                        else:
+                            raise NotImplementedError(f"Unsupported aggregation: {func_name}")
 
+                        result_row[col_name] = val
+
+
+
+                # --- Case 2: It's a regular grouped column (e.g., student_id in GROUP BY)
                 elif isinstance(agg, exp.Column):
-                    # Preserve grouping key columns
                     col_name = agg.output_name
-                    for k in rows[0]:
-                        if k.endswith(f".{col_name}"):
-                            result_row[alias or col_name] = rows[0][k]
-                            break
+                    table_prefix = agg.table
+
+                    # Try fully qualified match
+                    key = f"{table_prefix}.{col_name}" if table_prefix else col_name
+                    val = None
+
+                    if key in rows[0]:
+                        val = rows[0][key]
+                    else:
+                        # Fallback to suffix match
+                        for k in rows[0]:
+                            if k.endswith(f".{col_name}"):
+                                val = rows[0][k]
+                                break
+
+                    if val is not None:
+                        result_row[alias or col_name] = val
 
             results.append(result_row)
+
         return results
+
 
     def _apply_limit(self, rows: list[dict], limit_expr: exp.Limit) -> list[dict]:
         """
@@ -511,6 +546,10 @@ class Executor:
         """
         Execute SELECT queries with support for FROM, JOIN, WHERE, GROUP BY, HAVING, ORDER BY, DISTINCT, LIMIT.
         """
+
+        # -------------------------
+        # Step 1: Parse FROM clause
+        # -------------------------
         from_clause = ast.args.get("from")
         if not isinstance(from_clause, exp.From):
             raise ValueError("Missing FROM clause")
@@ -518,7 +557,7 @@ class Executor:
         table_objs = []
         alias_map = []
 
-        # Handle first table in FROM
+        # Get the first table and its alias
         first = from_clause.this
         if isinstance(first, exp.Table):
             name = first.this.this
@@ -530,7 +569,9 @@ class Executor:
         else:
             raise ValueError(f"Unsupported FROM element: {type(first)}")
 
-        # Handle JOINs (only single JOIN supported)
+        # ---------------------------------------
+        # Step 2: Parse and attach JOINs (if any)
+        # ---------------------------------------
         joins = ast.args.get("joins", [])
         for join in joins:
             tbl = join.this
@@ -544,8 +585,13 @@ class Executor:
             else:
                 raise ValueError(f"Unsupported JOIN element: {type(tbl)}")
 
-        # Cartesian product or join
+        # ---------------------------------------------
+        # Step 3: Perform cross-product or JOIN logic
+        # ---------------------------------------------
         row_sets = [tbl.select_all() for _, tbl in table_objs]
+        if len(table_objs) > 2:
+            raise ValueError("SELECT queries with more than 2 tables are not supported yet.")
+
         if len(table_objs) == 2 and joins:
             left_rows = table_objs[0][1].select_all()
             right_rows = table_objs[1][1].select_all()
@@ -553,33 +599,40 @@ class Executor:
             if not on_cond:
                 raise ValueError("JOIN missing ON condition")
 
+            # Choose nested-loop or sort-merge join strategy
             strategy = optimizer.choose_join_strategy(left_rows, right_rows, on_cond)
+            print(f"🔍 Using join strategy: {strategy}")
             if strategy == "sort_merge":
                 lk, rk = optimizer.extract_join_keys(on_cond)
                 raw = optimizer.sort_merge_join(left_rows, right_rows, lk, rk)
             else:
                 raw = [(l, r) for l, r in product(left_rows, right_rows)
-                       if l[optimizer.extract_join_keys(on_cond)[0]] ==
-                          r[optimizer.extract_join_keys(on_cond)[1]]]
+                    if l[optimizer.extract_join_keys(on_cond)[0]] ==
+                        r[optimizer.extract_join_keys(on_cond)[1]]]
         else:
             raw = list(product(*row_sets))
 
-        # Merge rows with proper aliasing
+        # ---------------------------------------------------------
+        # Step 4: Merge tuples, prefixing columns when joining tables
+        # ---------------------------------------------------------
         combined = []
         for combo in raw:
             merged = {}
             for (alias, tbl), row in zip(table_objs, combo):
                 if len(table_objs) == 1:
-                    merged.update(row)
+                    merged.update(row)  # no prefix
                 else:
                     for k, v in row.items():
                         merged[f"{alias}.{k}"] = v
             combined.append(merged)
 
-        # Apply WHERE with index if possible
+        # ---------------------------------------------------------
+        # Step 5: Apply WHERE filter (with index support if possible)
+        # ---------------------------------------------------------
         where_expr = ast.args.get("where")
         if where_expr:
             cond = where_expr.this
+            # Basic index acceleration (e.g., WHERE age = 22)
             if isinstance(cond, (exp.EQ, exp.GTE, exp.LTE, exp.GT, exp.LT)):
                 col, val_node = cond.this, cond.expression
                 if isinstance(col, exp.Column) and isinstance(val_node, exp.Literal):
@@ -595,8 +648,6 @@ class Executor:
                     idx = tbl.indexes.get(cn)
                     if idx is not None:
                         print(f"Using index on {tbl_name}.{cn} {cond.key} {val}")
-
-                        # Equality vs. range lookups
                         if isinstance(cond, exp.EQ):
                             rid = idx.get(val)
                             combined = ([{f"{tbl_name}.{k}": v for k, v in tbl.rows[rid].items()}]
@@ -608,69 +659,103 @@ class Executor:
                                 items = idx.items(max=val)
                             elif isinstance(cond, exp.GT):
                                 items = idx.items(min=val, excludemin=True)
-                            else:  # exp.LT
+                            else:
                                 items = idx.items(max=val, excludemax=True)
-
                             combined = [
                                 {f"{tbl_name}.{k}": v for k, v in tbl.rows[rid].items()}
                                 for _, rid in items
                             ]
 
-            # Reorder predicates for better performance
+            # Always reorder AND/OR clauses for performance
             reordered = optimizer.reorder_conditions(where_expr.this)
             print("Reordered WHERE clause:", reordered.sql())
             where_expr.set("this", reordered)
             combined = [r for r in combined if self._evaluate_condition(r, reordered)]
 
-        # ORDER BY, projection, grouping, aggregation, DISTINCT, LIMIT
+        # ------------------------
+        # Step 6: ORDER BY clause
+        # ------------------------
         combined = self._apply_order_by(combined, ast.args.get("order"))
 
+        # -------------------------------
+        # Step 7: Projection (SELECT ...)
+        # -------------------------------
         expressions = ast.args.get("expressions", [])
         if not expressions:
             raise ValueError("No expressions in SELECT clause.")
 
         group_exprs = ast.args.get("group")
+        having_expr = ast.args.get("having")
+
+        # If GROUP BY is specified
         if group_exprs:
             grouped = self._apply_group_by(combined, group_exprs)
+            # 🔒 Disallow aliasing in aggregation functions
+            for expr in expressions:
+                if isinstance(expr, exp.Alias) and isinstance(expr.this, exp.Func):
+                    raise ValueError("Aliasing aggregate expressions is not supported. Use functions without AS.")
+
             result = Executor._apply_aggregations(grouped, expressions)
-            having = ast.args.get("having")
-            if having:
-                result = [r for r in result if self._evaluate_condition(r, having.this)]
+            if having_expr:
+                result = [r for r in result if self._evaluate_condition(r, having_expr.this)]
+
+        # If no GROUP BY but SELECT contains only aggregate functions (e.g. COUNT(*))
+        elif all(isinstance(e.this if isinstance(e, exp.Alias) else e, exp.Func) for e in expressions):
+            grouped = {"__ALL__": combined}
+            result = Executor._apply_aggregations(grouped, expressions)
+
+        # Else: regular projection (non-aggregate SELECT)
         else:
+            def resolve_column(row, col_name, table_prefix):
+                if table_prefix and f"{table_prefix}.{col_name}" in row:
+                    return row[f"{table_prefix}.{col_name}"]
+                if col_name in row:
+                    return row[col_name]
+                for k in row:
+                    if k.endswith(f".{col_name}"):
+                        return row[k]
+                raise KeyError(f"Column '{col_name}' not found in row: {row}")
+
             result = []
-            # SELECT *
             if len(expressions) == 1 and isinstance(expressions[0], exp.Star):
                 result = combined
             else:
                 for row in combined:
                     proj = {}
                     for expr in expressions:
+                        # Support SELECT s.*
                         if isinstance(expr, exp.Column) and isinstance(expr.this, exp.Star):
                             tbl_prefix = expr.table
                             for k, v in row.items():
-                                if k.startswith(f"{tbl_prefix}."):
+                                if not tbl_prefix or k.startswith(f"{tbl_prefix}.") or k in table_objs[0][1].column_names:
                                     proj[k] = v
                             continue
 
                         alias = expr.alias if isinstance(expr, exp.Alias) else None
                         col = expr.find(exp.Column)
                         if not col:
-                            raise ValueError(f"Could not resolve column: {expr}")
+                            raise ValueError(f"Could not resolve column in SELECT: {expr}")
 
-                        cn = col.output_name
-                        key = f"{col.table}.{cn}" if col.table else cn
-                        val = row.get(key, None)
-                        if val is None:
-                            # Fallback by suffix
-                            val = next((v for k, v in row.items() if k.endswith(f".{cn}")), None)
+                        col_name = col.output_name
+                        table_prefix = col.table
 
-                        out = cn if len(table_objs) == 1 else alias or cn
-                        proj[out] = val
+                        try:
+                            val = resolve_column(row, col_name, table_prefix)
+                        except KeyError:
+                            val = None
+
+                        output_key = alias or col_name
+                        proj[output_key] = val
                     result.append(proj)
 
+
+        # ------------------------
+        # Step 9: DISTINCT + LIMIT
+        # ------------------------
         result = self._apply_distinct(result, ast.args.get("distinct"))
         result = self._apply_limit(result, ast.args.get("limit"))
         return result
+
 
     def check_foreign_key_constraints(self, table_name: str, row: dict):
         """
