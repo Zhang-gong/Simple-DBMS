@@ -721,32 +721,52 @@ class Executor:
         where_expr = ast.args.get("where")
         copy_of_expr = ast.args.get("where")
 
-
-
-
-
         if where_expr:
-            # Check if the WHERE clause is a simple equality condition and use index if available
-            if isinstance(where_expr.this, exp.EQ):
-                col_exp = where_expr.this.this
-                val_exp = where_expr.this.expression
+            condition = where_expr.this
+            if isinstance(condition, (exp.EQ, exp.GTE, exp.LTE, exp.GT, exp.LT)):
+                col_exp = condition.this
+                val_exp = condition.expression
 
                 if isinstance(col_exp, exp.Column) and isinstance(val_exp, exp.Literal):
                     col_name = col_exp.name
                     table_name = first_table_expr.this.this
                     value = val_exp.name or val_exp.this
 
+                    # 尝试将 value 转为 int（避免字符串比较）
+                    try:
+                        value = int(value)
+                    except:
+                        pass
+
                     table = self.schema.get_table(table_name)
-                    if col_name in table.indexes and table.indexes[col_name] is not None:
-                        print(f"⚡ Using index on {table_name}.{col_name} = {value}")
-                        row_id = table.indexes[col_name].get(int(value) if value.isdigit() else value)
-                        if row_id is not None:
-                            filtered_row = table.rows[row_id]
-                            combined_rows = [
-                                {f"{table_name}.{k}": v for k, v in filtered_row.items()}
-                            ]
+                    index = table.indexes.get(col_name)
+
+                    if index is not None:
+                        print(f"⚡ Using index on {table_name}.{col_name} {condition.key} {value}")
+
+                        # 不同操作使用不同范围查找
+                        if isinstance(condition, exp.EQ):
+                            row_id = index.get(value)
+                            if row_id is not None:
+                                row = table.rows[row_id]
+                                combined_rows = [{f"{table_name}.{k}": v for k, v in row.items()}]
+                            else:
+                                combined_rows = []
                         else:
-                            combined_rows = []  # No match
+                            # 范围查询
+                            if isinstance(condition, exp.GTE):
+                                btree_items = index.items(min=value)
+                            elif isinstance(condition, exp.LTE):
+                                btree_items = index.items(max=value)
+                            elif isinstance(condition, exp.GT):
+                                btree_items = index.items(min=value, excludemin=True)
+                            elif isinstance(condition, exp.LT):
+                                btree_items = index.items(max=value, excludemax=True)
+
+                            combined_rows = [
+                                {f"{table_name}.{k}": v for k, v in table.rows[row_id].items()}
+                                for _, row_id in btree_items
+                            ]
 
             reordered = optimizer.reorder_conditions(where_expr.this)
             print("🔍 Reordered WHERE clause:", reordered.sql())  # 打印重排后的 SQL 条件
