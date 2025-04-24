@@ -1,119 +1,138 @@
+# schema.py
+
 import os
 import json
 from typing import Dict
-from .table import Table
-from .table import ForeignKey
+from .table import Table, ForeignKey
 from sqlglot import exp
 
 class Schema:
+    """
+    Represents the database schema, including table definitions and foreign key metadata.
+    """
+
     def __init__(self, name: str):
+        """
+        Initialize a new schema.
+
+        Attributes:
+            tables (Dict[str, Table]): Mapping of table names to Table objects.
+            referenced_by (Dict[str, list[tuple[str, ForeignKey]]]):
+                Tracks which tables reference a given table.
+        """
         self.name = name
         self.tables: Dict[str, Table] = {}
-        self.referenced_by: Dict[str, list[tuple[str, ForeignKey]]] = {}  # 被哪些表引用
-
+        self.referenced_by: Dict[str, list[tuple[str, ForeignKey]]] = {}
 
     def create_table(self, table: Table):
+        """
+        Add a new table to the schema.
+
+        Raises:
+            ValueError: If a table with the same name already exists.
+        """
         if table.name in self.tables:
             raise ValueError(f"Table '{table.name}' already exists in schema '{self.name}'")
         self.tables[table.name] = table
 
     def has_table(self, table_name: str) -> bool:
+        """Return True if the schema contains a table by that name."""
         return table_name in self.tables
 
     def get_table(self, table_name: str) -> Table:
+        """Retrieve a Table object by name (or None if not found)."""
         return self.tables.get(table_name)
 
     def drop_table(self, table_name: str, policy: str = "RESTRICT"):
+        """
+        Remove a table from the schema, enforcing RESTRICT or CASCADE foreign key policy.
+
+        Raises:
+            ValueError: If table does not exist or RESTRICT policy prevents drop.
+        """
         if table_name not in self.tables:
             raise ValueError(f"Table '{table_name}' not found in schema '{self.name}'")
 
-        # ✅ 检查是否被其他表引用
+        # If other tables reference this one, enforce RESTRICT/CASCADE
         if table_name in self.referenced_by:
-            ref_list = self.referenced_by[table_name]
+            refs = self.referenced_by[table_name]
+            # If any foreign key is RESTRICT and policy is not CASCADE, block drop
+            if any(fk.policy == "RESTRICT" for _, fk in refs) and policy.upper() != "CASCADE":
+                ref_names = [tbl for tbl, _ in refs]
+                raise ValueError(f"Cannot drop '{table_name}': referenced by {ref_names}")
 
-            # ✅ 策略检查：是否有任意 foreign key 是 RESTRICT
-            has_restrict = any(fk.policy == "RESTRICT" for _, fk in ref_list)
-
-            if has_restrict and policy.upper() != "CASCADE":
-                ref_names = [tbl for tbl, _ in ref_list]
-                raise ValueError(f"❌ Cannot drop table '{table_name}': referenced by {ref_names} with RESTRICT policy")
-
-            # ✅ 如果设置为 CASCADE，递归删除所有引用它的子表
+            # If CASCADE, recursively drop dependent tables first
             if policy.upper() == "CASCADE":
-                for child_table_name, fk in ref_list:
-                    self.drop_table(child_table_name, policy="CASCADE")
+                for child, _ in refs:
+                    self.drop_table(child, policy="CASCADE")
             del self.referenced_by[table_name]
 
-        for ref_table_name in list(self.referenced_by.keys()):
-            updated_refs = [
-                (t, fk) for (t, fk) in self.referenced_by[ref_table_name]
-                if t != table_name  # ❗️删除当前表对别人的引用
-            ]
-            if updated_refs:
-                self.referenced_by[ref_table_name] = updated_refs
+        # Remove references to this table from other entries
+        for parent in list(self.referenced_by):
+            updated = [(t, fk) for t, fk in self.referenced_by[parent] if t != table_name]
+            if updated:
+                self.referenced_by[parent] = updated
             else:
-                del self.referenced_by[ref_table_name]  # 清理空列表
+                del self.referenced_by[parent]
 
-            # ✅ 3. 删除表本身
+        # Finally, delete the table definition
         del self.tables[table_name]
-        print(self.referenced_by)
+        print(f"Dropped table '{table_name}' and cleaned up references.")
 
     def save(self):
-        # Create schema directory
-        base_path = "data" 
-        for table in self.tables.values():
-            table_path = os.path.join(base_path, table.name)
-            table.save(table_path)
-        # Save foreign key metadata
-        foreignkey_data = {}
-        for ref_table, ref_list in self.referenced_by.items():
-            foreignkey_data[ref_table] = []
-            for table_name, fk in ref_list:
-                foreignkey_data[ref_table].append({
-                    "table": table_name,
+        """
+        Persist each table's data and metadata, and write foreign key info to disk.
+        """
+        base = "data"
+        # Save each table
+        for tbl in self.tables.values():
+            path = os.path.join(base, tbl.name)
+            tbl.save(path)
+
+        # Serialize foreign key metadata
+        fk_data = {}
+        for ref_table, refs in self.referenced_by.items():
+            fk_data[ref_table] = []
+            for tbl_name, fk in refs:
+                fk_data[ref_table].append({
+                    "table": tbl_name,
                     "columns": fk.local_col,
                     "ref_table": fk.ref_table,
                     "ref_columns": fk.ref_col,
                     "policy": fk.policy,
                 })
 
-        fk_path = os.path.join(base_path, "foreignkey.json")
-        with open(fk_path, "w") as f:
-            json.dump(foreignkey_data, f, indent=2)
+        fk_path = os.path.join(base, "foreignkey.json")
+        with open(fk_path, "w", encoding="utf-8") as f:
+            json.dump(fk_data, f, indent=2)
 
     @staticmethod
     def load(name: str) -> "Schema":
-        schema = Schema("default")
-        base_path = "data"
+        """
+        Load schema from disk: all tables and the foreign key JSON.
+        """
+        schema = Schema(name)
+        base = "data"
 
-        for table_name in os.listdir(base_path):
-            table_path = os.path.join(base_path, table_name)
-            if os.path.isdir(table_path):
-                table = Table.load(table_path)
-                schema.create_table(table)
+        # Recreate tables
+        for entry in os.listdir(base):
+            tbl_path = os.path.join(base, entry)
+            if os.path.isdir(tbl_path):
+                tbl = Table.load(tbl_path)
+                schema.create_table(tbl)
 
-
-        # Load foreign key metadata
-        fk_path = os.path.join(base_path, "foreignkey.json")
+        # Load foreign key relationships
+        fk_path = os.path.join(base, "foreignkey.json")
         if os.path.exists(fk_path):
-            with open(fk_path, "r") as f:
-                fk_data = json.load(f)
-
-                for ref_table, fk_list in fk_data.items():
-                    for fk_entry in fk_list:
-                        referencing_table = fk_entry["table"]
-                        local_col = fk_entry["columns"]
-                        ref_col = fk_entry["ref_columns"]
-                        policy = fk_entry.get("policy", "STRICT")  # 给默认值
-
+            with open(fk_path, "r", encoding="utf-8") as f:
+                fk_json = json.load(f)
+                for ref_table, fk_list in fk_json.items():
+                    for ent in fk_list:
                         fk_obj = ForeignKey(
-                            local_col=local_col,
-                            ref_table=fk_entry["ref_table"],
-                            ref_col=ref_col,
-                            policy=policy
+                            local_col=ent["columns"],
+                            ref_table=ent["ref_table"],
+                            ref_col=ent["ref_columns"],
+                            policy=ent.get("policy", "RESTRICT")
                         )
-                        if ref_table not in schema.referenced_by:
-                            schema.referenced_by[ref_table] = []
-                        schema.referenced_by[ref_table].append((referencing_table, fk_obj))
-
+                        schema.referenced_by.setdefault(ref_table, []).append((ent["table"], fk_obj))
         return schema

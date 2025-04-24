@@ -3,7 +3,7 @@ from sqlglot.expressions import Expression
 
 class SQLParser:
     """
-    SQLParser is a utility class for parsing SQL queries into ASTs using sqlglot.
+    Utility class to parse SQL strings into ASTs using sqlglot.
     """
 
     def __init__(self):
@@ -18,6 +18,9 @@ class SQLParser:
 
         Returns:
             Expression: The root node of the parsed SQL AST.
+
+        Raises:
+            Exception: If parsing fails.
         """
         try:
             parsed = sqlglot.parse_one(sql)
