@@ -397,9 +397,9 @@ class Executor:
         original_count = len(table.rows)
         where_expr = ast.args.get("where")
 
-        # print("🔄 B-Tree index before delete:",
-        #     dict(table.indexes[table.primary_key])
-        # )
+        print("🔄 B-Tree index before delete:",
+            dict(table.indexes[table.primary_key])
+        )
 
         if where_expr:
             # Identify rows to delete
@@ -427,9 +427,9 @@ class Executor:
 
         table.rebuild_indexes()
 
-        # print("✅ B-Tree index after rebuild:",
-        #     dict(table.indexes[table.primary_key])
-        # )
+        print("✅ B-Tree index after rebuild:",
+            dict(table.indexes[table.primary_key])
+        )
         deleted_count = original_count - len(table.rows)
         self.schema.save()
         print(f"Deleted {deleted_count} row(s) from '{table_name}'")
@@ -802,16 +802,33 @@ class Executor:
         if table_name not in self.schema.referenced_by:
             return
 
-        for child_table, fk in self.schema.referenced_by[table_name]:
-            for child_row in self.schema.get_table(child_table).select_all():
-                if child_row.get(fk.local_col) == pk_val:
-                    if fk.policy == "RESTRICT":
-                        raise ValueError(
-                            f"Cannot delete {table_name}.{pk_col}={pk_val}: "
-                            f"still referenced by {child_table}.{fk.local_col}"
-                        )
-                    # CASCADE would delete children, but here we only check
-
+        for child_table, fk in list(self.schema.referenced_by[table_name]):
+            child_tbl_obj = self.schema.get_table(child_table)
+            child_rows = [
+                r for r in child_tbl_obj.select_all()
+                if r.get(fk.local_col) == pk_val
+            ]
+            for child_row in child_rows:
+                if fk.policy == "RESTRICT":
+                    raise ValueError(
+                        f"Cannot delete {table_name}.{pk_col}={pk_val}: "
+                        f"still referenced by {child_table}.{fk.local_col}"
+                    )
+                # CASCADE would delete children, but here we only check
+                elif fk.policy == "CASCADE":
+                    self.check_foreign_key_constraints_delete(child_table, child_row)
+                    # 2) 实际删除这条子表记录
+                    #    a. 从 B-Tree 索引中移除
+                    for col, index in child_tbl_obj.indexes.items():
+                        if index is not None and index.get(child_row[col]) is not None:
+                            del index[child_row[col]]
+                    #    b. 从内存行列表中移除
+                    child_tbl_obj.rows = [
+                        r for r in child_tbl_obj.rows if r is not child_row
+                    ]
+                    #    c. 重建子表索引
+                    child_tbl_obj.rebuild_indexes()
+                    print(f"🔄 Cascade deleted {child_table} row where {fk.local_col}={pk_val}")
 
 
     def _execute_build_index(self, ast):
