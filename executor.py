@@ -544,7 +544,19 @@ class Executor:
 
     def _execute_select(self, ast: exp.Select):
         """
-        Execute SELECT queries with support for FROM, JOIN, WHERE, GROUP BY, HAVING, ORDER BY, DISTINCT, LIMIT.
+        Execute SELECT queries with support for:
+        - FROM clause with optional JOINs (up to 2 tables)
+        - WHERE clause with index acceleration and condition reordering
+        - GROUP BY and HAVING (aggregation support)
+        - ORDER BY (multi-key sorting)
+        - DISTINCT (duplicate elimination)
+        - LIMIT (row count cutoff)
+
+        Parameters:
+            ast (exp.Select): SQL SELECT statement parsed into sqlglot's AST.
+
+        Returns:
+            list[dict]: List of resulting rows (each row is a dict of output columns).
         """
 
         # -------------------------
@@ -554,10 +566,10 @@ class Executor:
         if not isinstance(from_clause, exp.From):
             raise ValueError("Missing FROM clause")
 
-        table_objs = []
-        alias_map = []
+        table_objs = []  # List of (alias, Table object)
+        alias_map = []   # Aliases used for table prefixing
 
-        # Get the first table and its alias
+        # Handle first table
         first = from_clause.this
         if isinstance(first, exp.Table):
             name = first.this.this
@@ -599,7 +611,6 @@ class Executor:
             if not on_cond:
                 raise ValueError("JOIN missing ON condition")
 
-            # Choose nested-loop or sort-merge join strategy
             strategy = optimizer.choose_join_strategy(left_rows, right_rows, on_cond)
             print(f"🔍 Using join strategy: {strategy}")
             if strategy == "sort_merge":
@@ -610,7 +621,7 @@ class Executor:
                     if l[optimizer.extract_join_keys(on_cond)[0]] ==
                         r[optimizer.extract_join_keys(on_cond)[1]]]
         else:
-            raw = list(product(*row_sets))
+            raw = list(product(*row_sets))  # For one table or cross product
 
         # ---------------------------------------------------------
         # Step 4: Merge tuples, prefixing columns when joining tables
@@ -620,19 +631,18 @@ class Executor:
             merged = {}
             for (alias, tbl), row in zip(table_objs, combo):
                 if len(table_objs) == 1:
-                    merged.update(row)  # no prefix
+                    merged.update(row)
                 else:
                     for k, v in row.items():
                         merged[f"{alias}.{k}"] = v
             combined.append(merged)
 
         # ---------------------------------------------------------
-        # Step 5: Apply WHERE filter (with index support if possible)
+        # Step 5: Apply WHERE filter (with optional index usage)
         # ---------------------------------------------------------
         where_expr = ast.args.get("where")
         if where_expr:
             cond = where_expr.this
-            # Basic index acceleration (e.g., WHERE age = 22)
             if isinstance(cond, (exp.EQ, exp.GTE, exp.LTE, exp.GT, exp.LT)):
                 col, val_node = cond.this, cond.expression
                 if isinstance(col, exp.Column) and isinstance(val_node, exp.Literal):
@@ -643,15 +653,13 @@ class Executor:
                         val = int(val)
                     except:
                         pass
-
                     tbl = self.schema.get_table(tbl_name)
                     idx = tbl.indexes.get(cn)
                     if idx is not None:
                         print(f"Using index on {tbl_name}.{cn} {cond.key} {val}")
                         if isinstance(cond, exp.EQ):
                             rid = idx.get(val)
-                            combined = ([{f"{tbl_name}.{k}": v for k, v in tbl.rows[rid].items()}]
-                                        if rid is not None else [])
+                            combined = ([{k: v for k, v in tbl.rows[rid].items()}] if rid is not None else []) if len(table_objs) == 1 else ([{f"{tbl_name}.{k}": v for k, v in tbl.rows[rid].items()}] if rid is not None else [])
                         else:
                             if isinstance(cond, exp.GTE):
                                 items = idx.items(min=val)
@@ -661,12 +669,9 @@ class Executor:
                                 items = idx.items(min=val, excludemin=True)
                             else:
                                 items = idx.items(max=val, excludemax=True)
-                            combined = [
-                                {f"{tbl_name}.{k}": v for k, v in tbl.rows[rid].items()}
-                                for _, rid in items
-                            ]
+                            combined = [{f"{tbl_name}.{k}": v for k, v in tbl.rows[rid].items()} for _, rid in items]
 
-            # Always reorder AND/OR clauses for performance
+            # Reorder AND/OR condition for optimization
             reordered = optimizer.reorder_conditions(where_expr.this)
             print("Reordered WHERE clause:", reordered.sql())
             where_expr.set("this", reordered)
@@ -678,7 +683,7 @@ class Executor:
         combined = self._apply_order_by(combined, ast.args.get("order"))
 
         # -------------------------------
-        # Step 7: Projection (SELECT ...)
+        # Step 7: Parse SELECT expressions
         # -------------------------------
         expressions = ast.args.get("expressions", [])
         if not expressions:
@@ -687,24 +692,36 @@ class Executor:
         group_exprs = ast.args.get("group")
         having_expr = ast.args.get("having")
 
-        # If GROUP BY is specified
+        # -------------------------------
+        # Step 8: GROUP BY + HAVING logic
+        # -------------------------------
         if group_exprs:
+            # Group the combined rows based on the group-by column expressions.
+            # The result is a dictionary: {group_key: [rows_in_group]}
             grouped = self._apply_group_by(combined, group_exprs)
-            # 🔒 Disallow aliasing in aggregation functions
+
+            # Disallow use of aliases in aggregate expressions (e.g., MAX(x) AS m).
+            # This is a design constraint to avoid complexity in downstream parsing.
             for expr in expressions:
                 if isinstance(expr, exp.Alias) and isinstance(expr.this, exp.Func):
                     raise ValueError("Aliasing aggregate expressions is not supported. Use functions without AS.")
-
+                
+            # Apply aggregation functions (e.g., SUM, COUNT) and regular group projections.
+            # This step transforms each group into a single output row.
             result = Executor._apply_aggregations(grouped, expressions)
+
+            # If there is a HAVING clause, filter the result rows based on that condition.
+            # The HAVING clause is evaluated on the already-aggregated result rows.
             if having_expr:
                 result = [r for r in result if self._evaluate_condition(r, having_expr.this)]
 
-        # If no GROUP BY but SELECT contains only aggregate functions (e.g. COUNT(*))
+        # Handle case where all SELECT expressions are aggregates but no GROUP BY is provided.
+        # This is effectively a single-group (global aggregation) over all combined rows.
         elif all(isinstance(e.this if isinstance(e, exp.Alias) else e, exp.Func) for e in expressions):
             grouped = {"__ALL__": combined}
             result = Executor._apply_aggregations(grouped, expressions)
 
-        # Else: regular projection (non-aggregate SELECT)
+        # Otherwise, this is a standard non-aggregated SELECT projection.
         else:
             def resolve_column(row, col_name, table_prefix):
                 if table_prefix and f"{table_prefix}.{col_name}" in row:
@@ -723,7 +740,6 @@ class Executor:
                 for row in combined:
                     proj = {}
                     for expr in expressions:
-                        # Support SELECT s.*
                         if isinstance(expr, exp.Column) and isinstance(expr.this, exp.Star):
                             tbl_prefix = expr.table
                             for k, v in row.items():
@@ -735,7 +751,6 @@ class Executor:
                         col = expr.find(exp.Column)
                         if not col:
                             raise ValueError(f"Could not resolve column in SELECT: {expr}")
-
                         col_name = col.output_name
                         table_prefix = col.table
 
@@ -748,13 +763,13 @@ class Executor:
                         proj[output_key] = val
                     result.append(proj)
 
-
         # ------------------------
         # Step 9: DISTINCT + LIMIT
         # ------------------------
         result = self._apply_distinct(result, ast.args.get("distinct"))
         result = self._apply_limit(result, ast.args.get("limit"))
         return result
+
 
 
     def check_foreign_key_constraints(self, table_name: str, row: dict):
