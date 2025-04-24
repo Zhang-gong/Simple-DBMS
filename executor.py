@@ -748,7 +748,7 @@ class Executor:
                         else:
                             combined_rows = []  # No match
 
-            reordered = optimizer.reorder_conjunctive_conditions(where_expr.this)
+            reordered = optimizer.reorder_conditions(where_expr.this)
             print("🔍 Reordered WHERE clause:", reordered.sql())  # 打印重排后的 SQL 条件
             where_expr.set("this", reordered)
             combined_rows = [row for row in combined_rows if self._evaluate_condition(row, where_expr.this)]

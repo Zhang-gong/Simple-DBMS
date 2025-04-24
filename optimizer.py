@@ -1,4 +1,5 @@
 from sqlglot import parse_one,exp
+from functools import reduce
 
 def choose_join_strategy(left_rows, right_rows, condition: exp.Expression) -> str:
     """
@@ -78,32 +79,62 @@ def sort_merge_join(left_rows, right_rows, left_key: str, right_key: str) -> lis
 
 
 
-def reorder_conjunctive_conditions(expression: exp.Expression):
+
+
+def reorder_conditions(expression: exp.Expression) -> exp.Expression:
+    """
+    Reorder conjunctive (AND) and disjunctive (OR) expressions based on estimated cost.
+    AND: ascending (cost low first)
+    OR: descending (cost high first)
+    """
     if isinstance(expression, exp.And):
-        flat_conditions = flatten_and(expression)
-        sorted_conditions = sorted(flat_conditions, key=estimate_cost)
-        return rebuild_and_chain(sorted_conditions)
+        return reorder_logical_conditions(expression, is_and=True)
+    elif isinstance(expression, exp.Or):
+        return reorder_logical_conditions(expression, is_and=False)
     return expression
 
-def flatten_and(expression):
-    # 把 AND 树拍平成一个列表
-    conditions = []
+def reorder_logical_conditions(expression: exp.Expression, is_and: bool) -> exp.Expression:
+    """
+    Reorder AND / OR expression tree into sorted flat chain
+    """
+    flat_conditions = flatten_conditions(expression, is_and)
+    sorted_conditions = sorted(
+        flat_conditions,
+        key=estimate_cost,
+        reverse=not is_and  # AND升序，OR降序
+    )
+    return rebuild_condition_chain(sorted_conditions, is_and)
+
+def flatten_conditions(expression: exp.Expression, is_and: bool) -> list[exp.Expression]:
+    """
+    Flatten nested AND/OR expression into list
+    """
+    result = []
     def _recurse(e):
-        if isinstance(e, exp.And):
+        if (is_and and isinstance(e, exp.And)) or (not is_and and isinstance(e, exp.Or)):
             _recurse(e.left)
             _recurse(e.right)
         else:
-            conditions.append(e)
+            result.append(e)
     _recurse(expression)
-    return conditions
+    return result
 
-def rebuild_and_chain(conditions):
-    # 把 list 再还原成 exp.And 链表结构
-    from functools import reduce
-    return reduce(lambda x, y: exp.and_(x, y), conditions)
+def rebuild_condition_chain(conditions: list[exp.Expression], is_and: bool) -> exp.Expression:
+    """
+    Rebuild exp.And or exp.Or tree from list
+    """
+    if not conditions:
+        return None
+    join_func = exp.and_ if is_and else exp.or_
+    return reduce(join_func, conditions)
 
-def estimate_cost(pred: exp.Expression):
+def estimate_cost(pred: exp.Expression) -> int:
+    """
+    Assign a heuristic cost score to the predicate.
+    Lower is cheaper (better for AND), higher is more likely (better for OR).
+    """
     sql = pred.sql().upper()
+
     if "=" in sql:
         return 1
     elif ">" in sql or "<" in sql:
@@ -114,3 +145,4 @@ def estimate_cost(pred: exp.Expression):
         return 100
     else:
         return 20
+

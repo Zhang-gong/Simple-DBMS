@@ -21,7 +21,6 @@ class SQLParser:
         """
         try:
             parsed = sqlglot.parse_one(sql)
-            #print("parsed：")
             return parsed
         except Exception as e:
             print(f"[SQLParser Error] Failed to parse SQL: {sql}")
