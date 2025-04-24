@@ -1,5 +1,3 @@
-# executor.py
-
 import sys
 import os
 from sqlglot import exp
@@ -8,6 +6,7 @@ from typing import List, Dict, Any
 from catalog.table import Table, ForeignKey
 from itertools import product
 import optimizer
+from BTrees.OOBTree import OOBTree
 
 class Executor:
     """
@@ -306,6 +305,13 @@ class Executor:
                 ref_table = column_def.args['reference'].this.this.name
                 ref_cols = column_def.args['reference'].this.expressions[0].name
 
+                ref_args = column_def.args['reference'].args
+                options = ref_args.get('options') or []
+
+                if options and options[0].upper() == 'ON DELETE CASCADE':
+                    policy = "CASCADE"
+                else:
+                    policy = "RESTRICT"
                 if len(local_cols) != 1:
                     raise ValueError("Only single-column foreign keys are supported.")
                 if not self.schema.has_table(ref_table):
@@ -323,7 +329,7 @@ class Executor:
                     local_col=local_cols[0],
                     ref_table=ref_table,
                     ref_col=ref_cols,
-                    policy="RESTRICT"
+                    policy=policy
                 )
                 foreign_keys.append(fk)
 
@@ -356,6 +362,10 @@ class Executor:
         original_count = len(table.rows)
         where_expr = ast.args.get("where")
 
+        # print("🔄 B-Tree index before delete:",
+        #     dict(table.indexes[table.primary_key])
+        # )
+
         if where_expr:
             # Identify rows to delete
             matching = self._apply_where_clause(table.rows, where_expr)
@@ -381,6 +391,10 @@ class Executor:
             table.rows.clear()
 
         table.rebuild_indexes()
+
+        # print("✅ B-Tree index after rebuild:",
+        #     dict(table.indexes[table.primary_key])
+        # )
         deleted_count = original_count - len(table.rows)
         self.schema.save()
         print(f"Deleted {deleted_count} row(s) from '{table_name}'")
@@ -716,7 +730,6 @@ class Executor:
             # ✅ Build new index
             table.indexes[column_name] = OOBTree()
             print(f"⚙  Created new index on {table_name}.{column_name}")
-            print(f"after create index:", dict(table.indexes[table.primary_key]))
         else:
             print(f"🔄 Rebuilding existing index on {table_name}.{column_name}")
 
