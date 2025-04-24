@@ -112,7 +112,7 @@ class Table:
         # Save indexes
         file_path = os.path.join(directory, f"{self.name}_index.pkl")
         with open(file_path, "wb") as f:
-            pickle.dump(self.indexes, f)
+            pickle.dump(self.indexes, f, protocol=4)
 
 
 
@@ -154,14 +154,22 @@ class Table:
         return table
 
     def rebuild_indexes(self):
-        """
-        Rebuild all non-null indexes from scratch based on current rows.
-        This ensures index structures remain consistent after deletions or row reordering.
-        """
+        BATCH_SIZE = 5000  # You can tune this
+
         for col, index in self.indexes.items():
             if index is not None:
-                index.clear()  # Clear existing index structure
-                for row_id, row in enumerate(self.rows):
-                    value = row[col]
-                    index[value] = row_id  # Rebuild index using current row_id
+                print(f"⚙️ Chunked rebuild on '{col}' for table '{self.name}'...")
 
+                new_index = OOBTree()
+
+                # Insert in batches
+                for batch_start in range(0, len(self.rows), BATCH_SIZE):
+                    batch = self.rows[batch_start:batch_start + BATCH_SIZE]
+                    for row_id, row in enumerate(batch, start=batch_start):
+                        try:
+                            new_index[row[col]] = row_id
+                        except RecursionError:
+                            print(f"❌ RecursionError at row_id={row_id}, skipping")
+                            continue
+
+                self.indexes[col] = new_index

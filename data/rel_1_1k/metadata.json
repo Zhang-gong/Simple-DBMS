@@ -1,0 +1,14 @@
+{
+    "name": "rel_1_1k",
+    "columns": [
+        {
+            "name": "id",
+            "type": "INT"
+        },
+        {
+            "name": "val",
+            "type": "INT"
+        }
+    ],
+    "primary_key": "id"
+}

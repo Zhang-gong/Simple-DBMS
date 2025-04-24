@@ -2,6 +2,8 @@ from catalog.schema import Schema
 from executor import Executor
 from sql_parser import SQLParser
 import time
+import sys
+sys.setrecursionlimit(10000000)
 
 # ANSI color codes
 RESET = "\033[0m"
