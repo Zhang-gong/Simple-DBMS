@@ -420,7 +420,6 @@ class Executor:
 
         table = self.schema.get_table(table_name)
         original_count = len(table.rows)
-        print(f"before delete:", dict(table.indexes[table.primary_key]))
         where_expr = ast.args.get("where")
         if where_expr:
             matching_rows = self._apply_where_clause(table.rows, where_expr) #delete matching_rows
@@ -449,10 +448,8 @@ class Executor:
                     index.clear()
             table.rows.clear()
 
-        print(f"after delete:", dict(table.indexes[table.primary_key]))
 
         table.rebuild_indexes()
-        print(f"after rebuild:", dict(table.indexes[table.primary_key]))
         deleted_count = original_count - len(table.rows)
         self.schema.save()
         print(f"🗑️ Deleted {deleted_count} row(s) from '{table_name}'.")
@@ -714,8 +711,12 @@ class Executor:
             merged = {}
             for (alias, _), row in zip(table_objs, combo):
                 for k, v in row.items():
-                    merged[f"{alias}.{k}"] = v
+                    if len(table_objs) == 1:
+                        merged[k] = v  # no prefix
+                    else:
+                        merged[f"{alias}.{k}"] = v  # keep qualified name
             combined_rows.append(merged)
+
 
         where_expr = ast.args.get("where")
         copy_of_expr = ast.args.get("where")
@@ -801,7 +802,7 @@ class Executor:
                                     val = row[k]
                                     break
 
-                        output_key = alias or col_name
+                        output_key = col_name if len(table_objs) == 1 else alias or col_name
                         projected[output_key] = val
 
                     result.append(projected)

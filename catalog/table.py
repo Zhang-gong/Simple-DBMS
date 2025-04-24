@@ -109,10 +109,10 @@ class Table:
             writer = csv.DictWriter(f, fieldnames=self.column_names)
             writer.writeheader()
             writer.writerows(self.rows)
-        # Save indexes
-        file_path = os.path.join(directory, f"{self.name}_index.pkl")
-        with open(file_path, "wb") as f:
-            pickle.dump(self.indexes, f, protocol=4)
+        # # Save indexes
+        # file_path = os.path.join(directory, f"{self.name}_index.pkl")
+        # with open(file_path, "wb") as f:
+        #     pickle.dump(self.indexes, f, protocol=4)
 
 
 
@@ -146,30 +146,27 @@ class Table:
                             row[col_name] = int(row[col_name])
                     table.rows.append(row)
         # Load indexes
-        file_path = os.path.join(directory, f"{table.name}_index.pkl")
-        if os.path.exists(file_path):
-            with open(file_path, "rb") as f:
-                table.indexes = pickle.load(f)
+        table.rebuild_indexes()
 
         return table
 
     def rebuild_indexes(self):
-        BATCH_SIZE = 5000  # You can tune this
+        from random import shuffle
 
         for col, index in self.indexes.items():
             if index is not None:
-                print(f"⚙️ Chunked rebuild on '{col}' for table '{self.name}'...")
+                # 1. Prepare key-value pairs
+                row_pairs = [(row[col], row_id) for row_id, row in enumerate(self.rows)]
 
+                # 2. Shuffle the insertion order
+                shuffle(row_pairs)
+
+                # 3. Build the BTree safely
                 new_index = OOBTree()
-
-                # Insert in batches
-                for batch_start in range(0, len(self.rows), BATCH_SIZE):
-                    batch = self.rows[batch_start:batch_start + BATCH_SIZE]
-                    for row_id, row in enumerate(batch, start=batch_start):
-                        try:
-                            new_index[row[col]] = row_id
-                        except RecursionError:
-                            print(f"❌ RecursionError at row_id={row_id}, skipping")
-                            continue
+                for key, row_id in row_pairs:
+                    try:
+                        new_index[key] = row_id
+                    except RecursionError:
+                        print(f"❌ RecursionError inserting key {key}, skipping")
 
                 self.indexes[col] = new_index

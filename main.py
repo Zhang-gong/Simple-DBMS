@@ -86,12 +86,12 @@ def main():
 
                     end_time = time.time()
                     duration_ms = (end_time - start_time) * 1000
-                    print(f"{YELLOW}⏱ Execution Time: {duration_ms:.2f} ms{RESET}")
-
+                    
                     if result is not None:
-                        print(f"{YELLOW}{len(result)} row(s) returned.{RESET}")
                         print_mysql_table(result)
+                        print(f"{YELLOW}{len(result)} row(s) returned.{RESET}")
 
+                    print(f"{YELLOW}⏱ Execution Time: {duration_ms:.2f} ms{RESET}")
 
 
                 except Exception as e:
