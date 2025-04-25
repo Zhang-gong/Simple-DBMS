@@ -1,51 +1,23 @@
-#  TODO List
+# Simple-DBMS
 
-## Catalog & Schema
-- [x] Define `Schema` and `Table` with primary key support
-- [ ] Primary key constraint enforcement(uniqueness)
-- [ ] Add foreign key tracking and validation
+## Overview  
+Simple-DBMS is a lightweight, Python-based relational database management system that supports core SQL features through a command-line interface. It uses **sqlglot** for parsing SQL into an AST and an **Executor** component to execute the queries.
 
-## Parser (using sqlglot)
-- [x] Parse SQL string into AST
-- [ ] Extract SELECT, WHERE, GROUP BY, ORDER BY, HAVING
-- [ ] Support WHERE with AND / OR
-- [ ] Identify aggregate functions (SUM, MAX, etc.)
+## Key Features  
+- **Schema Definition**: `CREATE TABLE`, `DROP TABLE` with automatic schema persistence.  `INSERT`, `UPDATE`, `DELETE` with primary key uniqueness and foreign key constraint checks.  
+- **Query Processing**: `SELECT` with `WHERE` (=, !=, <, <=, >, >=), `ORDER BY`, `GROUP BY`, `HAVING`, `DISTINCT`, and `LIMIT`. 
+- **Joins**: 2-table support with a heuristic choice between Nested-Loop and Sort-Merge join strategies. 
+- **Condition Reordering**: Conjunctive (AND) and disjunctive (OR) predicates are reordered by estimated cost to improve evaluation efficiency. 
+- **Indexes**: B-Tree indexes (BTrees.OOBTree) can be built on any column for fast equality and range scans.
+- **Constraints**: Automatic primary key index creation; foreign key enforcement with `RESTRICT` and optional `CASCADE` deletion policies. 
 
-## Executor
-- [ ] Column projection
-- [ ] Row filtering (WHERE)
-- [ ] Logical operations (AND, OR)
-- [ ] Sorting (ORDER BY)
-- [ ] Aggregation (SUM, MAX, MIN)
-- [ ] Grouping (GROUP BY)
-- [ ] Group filtering (HAVING)
+## Dependencies  
+- **Python**: recommend 3.11.9 or later 
+- **sqlglot** for SQL parsing (`pip install sqlglot`) 
+- **BTrees** for B-Tree implementation (`pip install BTrees`) 
 
-## Expressions & Operators
-- [ ] Implement base `Expression` class
-- [ ] Binary operators (=, >, <, AND, OR)
-- [ ] Aggregate operators (SUM, MAX, etc.)
-
-## Join
-- [ ] Support 2-table theta join with ON condition
-- [ ] Handle alias and qualified column names (e.g., A.id)
-
-## Testing & Demo
-- [ ] Create sample tables and data (e.g., students, enrollments)
-- [ ] Write test queries:
-  - Simple SELECT + WHERE
-  - SELECT + ORDER BY
-  - SELECT + GROUP BY + HAVING
-  - SELECT with JOIN and condition
-
-## Optional Extensions
-- [ ] Add execution plan printing (EXPLAIN)
-- [ ] Type checking (integer vs string)
-- [ ] Index-aware scan simulation
-- [ ] Add error handling for invalid queries
-
-
-
-- [ ] 2 table 
-- [ ] primary key (2 columns)
-- [ ] Conjunctive and disjunctive condition ordering
-- [ ] optimizer
+## Installation  
+Clone the repository:  
+   ```bash
+      git clone https://github.com/your-username/simple-dbms.git
+      cd simple-dbms
