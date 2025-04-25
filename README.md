@@ -19,5 +19,5 @@ Simple-DBMS is a lightweight, Python-based relational database management system
 ## Installation  
 Clone the repository:  
    ```bash
-      git clone https://github.com/your-username/simple-dbms.git
-      cd simple-dbms
+    git clone https://github.com/your-username/simple-dbms.git
+    cd simple-dbms
