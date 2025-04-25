@@ -1,1 +1,20 @@
-{}
+{
+  "students": [
+    {
+      "table": "enrollments",
+      "columns": "student_id",
+      "ref_table": "students",
+      "ref_columns": "id",
+      "policy": "RESTRICT"
+    }
+  ],
+  "courses": [
+    {
+      "table": "enrollments",
+      "columns": "course_id",
+      "ref_table": "courses",
+      "ref_columns": "course_id",
+      "policy": "RESTRICT"
+    }
+  ]
+}
