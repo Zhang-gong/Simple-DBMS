@@ -817,16 +817,16 @@ class Executor:
                 # CASCADE would delete children, but here we only check
                 elif fk.policy == "CASCADE":
                     self.check_foreign_key_constraints_delete(child_table, child_row)
-                    # 2) 实际删除这条子表记录
-                    #    a. 从 B-Tree 索引中移除
+                    # 2) delete the child table row
+                    #    remove index from btree
                     for col, index in child_tbl_obj.indexes.items():
                         if index is not None and index.get(child_row[col]) is not None:
                             del index[child_row[col]]
-                    #    b. 从内存行列表中移除
+                    #    remove it from memory
                     child_tbl_obj.rows = [
                         r for r in child_tbl_obj.rows if r is not child_row
                     ]
-                    #    c. 重建子表索引
+                    #    rebuild child table indexes
                     child_tbl_obj.rebuild_indexes()
                     print(f"🔄 Cascade deleted {child_table} row where {fk.local_col}={pk_val}")
 
